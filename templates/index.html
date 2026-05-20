@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FSFN Inventory</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #f8f7f4;
+      --surface: #ffffff;
+      --border:  rgba(0,0,0,0.1);
+      --text:    #1a1a18;
+      --muted:   #6b6b67;
+      --hint:    #9a9a96;
+      --green:   #1D9E75;
+      --amber:   #BA7517;
+      --red:     #E24B4A;
+      --blue:    #185FA5;
+      --purple:  #6B3FA0;
+      --teal:    #167B82;
+      --green-bg: #EAF3DE;
+      --amber-bg: #FAEEDA;
+      --red-bg:   #FCEBEB;
+      --blue-bg:  #E6F1FB;
+      --radius:  10px;
+    }
+
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+           background: var(--bg); color: var(--text); font-size: 15px; line-height: 1.5; }
+
+    header { background: var(--surface); border-bottom: 0.5px solid var(--border);
+             padding: 0 1.5rem; height: 52px; display: flex; align-items: center;
+             justify-content: space-between; position: sticky; top: 0; z-index: 10; }
+    header h1 { font-size: 15px; font-weight: 500; }
+    header nav a { font-size: 12px; color: var(--muted); margin-left: 1rem; text-decoration: none; }
+    header nav a:hover { color: var(--text); }
+    #last-updated { font-size: 12px; color: var(--hint); margin-left: 1rem; }
+
+    main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
+
+    .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+                gap: 10px; margin-bottom: 1.75rem; }
+    .stat { background: var(--bg); border-radius: 8px; padding: 0.875rem 1rem; }
+    .stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase;
+                  letter-spacing: 0.05em; margin-bottom: 4px; }
+    .stat-value { font-size: 22px; font-weight: 500; }
+    .stat-sub    { font-size: 11px; color: var(--hint); margin-top: 3px; }
+
+    section + section { margin-top: 2rem; }
+    .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 8px; flex-wrap: wrap; }
+    .section-title { font-size: 11px; font-weight: 500; color: var(--muted);
+                     text-transform: uppercase; letter-spacing: 0.06em; }
+
+    .controls { display: flex; gap: 6px; align-items: center; }
+    .toggle-group { display: inline-flex; background: var(--bg); border-radius: 6px; padding: 2px; }
+    .toggle-btn { font-size: 11px; padding: 4px 10px; border: none; background: transparent;
+                  color: var(--muted); cursor: pointer; border-radius: 4px; font-family: inherit; }
+    .toggle-btn.active { background: var(--surface); color: var(--text); box-shadow: 0 0.5px 1px rgba(0,0,0,0.08); }
+    select.filter { font-size: 12px; padding: 4px 8px; border: 0.5px solid var(--border);
+                    border-radius: 6px; background: var(--surface); color: var(--text);
+                    font-family: inherit; }
+
+    .chart-card { background: var(--surface); border: 0.5px solid var(--border);
+                  border-radius: var(--radius); padding: 1rem; }
+    .chart-wrap { position: relative; height: 260px; }
+
+    .inv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 10px; }
+    .inv-card { background: var(--surface); border: 0.5px solid var(--border);
+                border-radius: var(--radius); padding: 0.875rem 1rem;
+                cursor: pointer; transition: border-color 0.15s, transform 0.15s; }
+    .inv-card:hover { border-color: rgba(0,0,0,0.25); transform: translateY(-1px); }
+    .inv-item  { font-size: 13px; font-weight: 500; margin-bottom: 2px; }
+    .inv-time  { font-size: 11px; color: var(--hint); margin-bottom: 10px; }
+    .inv-qty   { font-size: 20px; font-weight: 500; }
+    .inv-unit  { font-size: 12px; color: var(--muted); font-weight: 400; margin-left: 3px; }
+    .inv-weight { font-size: 11px; color: var(--muted); margin-top: 4px; }
+    .bar-wrap  { height: 3px; background: var(--border); border-radius: 2px; margin-top: 8px; }
+    .bar       { height: 3px; border-radius: 2px; transition: width 0.4s; }
+
+    .qty-ok    { color: var(--green); }
+    .qty-low   { color: var(--amber); }
+    .qty-out   { color: var(--red);   }
+    .bar-ok    { background: var(--green); }
+    .bar-low   { background: var(--amber); }
+    .bar-out   { background: var(--red);   }
+
+    .badge { display: inline-block; font-size: 10px; font-weight: 500; padding: 2px 7px;
+             border-radius: 5px; margin-left: 6px; vertical-align: middle; }
+    .badge-low { background: var(--amber-bg); color: var(--amber); }
+    .badge-out { background: var(--red-bg);   color: var(--red);   }
+
+    .feed { list-style: none; }
+    .feed li { display: flex; gap: 10px; padding: 10px 0;
+               border-bottom: 0.5px solid var(--border); align-items: flex-start; }
+    .feed li:last-child { border-bottom: none; }
+    .feed-dot { width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0;
+                display: flex; align-items: center; justify-content: center;
+                font-size: 13px; margin-top: 1px; }
+    .dot-green { background: var(--green-bg); color: var(--green); }
+    .dot-blue  { background: var(--blue-bg);  color: var(--blue);  }
+    .dot-amber { background: var(--amber-bg); color: var(--amber); }
+    .dot-red   { background: var(--red-bg);   color: var(--red);   }
+    .feed-note { font-size: 13px; color: var(--text); margin-bottom: 2px; }
+    .feed-raw  { font-size: 11px; color: var(--muted); font-style: italic; margin-bottom: 1px; }
+    .feed-meta { font-size: 11px; color: var(--hint); }
+
+    .empty { color: var(--hint); font-size: 13px; padding: 1rem 0; }
+
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    @media (max-width: 720px) { .two-col { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>FSFN Inventory</h1>
+    <div style="display:flex; align-items:center;">
+      <nav><a href="/">Dashboard</a><a href="/admin">Admin</a></nav>
+      <span id="last-updated">Loading…</span>
+    </div>
+  </header>
+
+  <main>
+    <div class="stat-row" id="stats">
+      <div class="stat"><div class="stat-label">SKUs tracked</div><div class="stat-value" id="s-skus">—</div></div>
+      <div class="stat"><div class="stat-label">Low / out of stock</div><div class="stat-value" id="s-low" style="color:var(--amber)">—</div></div>
+      <div class="stat"><div class="stat-label">Sales today</div><div class="stat-value" id="s-today">—</div></div>
+      <div class="stat"><div class="stat-label">Sales all time</div><div class="stat-value" id="s-total">—</div><div class="stat-sub" id="s-txn"></div></div>
+    </div>
+
+    <div class="two-col">
+      <section class="chart-card">
+        <div class="section-header">
+          <div class="section-title">Cash flow</div>
+          <div class="controls">
+            <select class="filter" id="cash-site"><option value="">All sites</option></select>
+            <div class="toggle-group" id="cash-range">
+              <button class="toggle-btn" data-days="7">7d</button>
+              <button class="toggle-btn active" data-days="30">30d</button>
+              <button class="toggle-btn" data-days="90">90d</button>
+            </div>
+            <div class="toggle-group" id="cash-bucket">
+              <button class="toggle-btn" data-bucket="hour">Hour</button>
+              <button class="toggle-btn active" data-bucket="day">Day</button>
+              <button class="toggle-btn" data-bucket="week">Week</button>
+            </div>
+          </div>
+        </div>
+        <div class="chart-wrap"><canvas id="cash-chart"></canvas></div>
+      </section>
+
+      <section class="chart-card">
+        <div class="section-header">
+          <div class="section-title">Totals</div>
+          <div class="controls">
+            <div class="toggle-group" id="tot-metric">
+              <button class="toggle-btn active" data-metric="quantity">Quantity</button>
+              <button class="toggle-btn" data-metric="weight">Weight (lbs)</button>
+            </div>
+            <div class="toggle-group" id="tot-segment">
+              <button class="toggle-btn active" data-segment="item">By item</button>
+              <button class="toggle-btn" data-segment="site">By site</button>
+            </div>
+          </div>
+        </div>
+        <div class="chart-wrap"><canvas id="tot-chart"></canvas></div>
+      </section>
+    </div>
+
+    <section>
+      <div class="section-header"><div class="section-title">Current inventory</div></div>
+      <div class="inv-grid" id="inv-grid"><p class="empty">Loading…</p></div>
+    </section>
+
+    <section>
+      <div class="section-header"><div class="section-title">Recent SMS activity</div></div>
+      <ul class="feed" id="feed"><li class="empty">Loading…</li></ul>
+    </section>
+  </main>
+
+  <script>
+    const LOW_THRESHOLD = 5;
+    const PALETTE = ['#1D9E75', '#185FA5', '#BA7517', '#6B3FA0', '#167B82', '#E24B4A', '#8a8a86'];
+
+    function fmt(n) { return new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0}).format(n); }
+    function fmtTime(iso) {
+      const d = new Date(iso + (iso.endsWith('Z') ? '' : 'Z'));
+      const diff = Math.round((Date.now() - d)/1000);
+      if (diff < 60)  return `${diff}s ago`;
+      if (diff < 3600) return `${Math.round(diff/60)}m ago`;
+      if (diff < 86400) return `${Math.round(diff/3600)}h ago`;
+      return d.toLocaleDateString();
+    }
+
+    function statusClass(qty) {
+      if (qty === 0) return 'out';
+      if (qty <= LOW_THRESHOLD) return 'low';
+      return 'ok';
+    }
+
+    // Chart instances
+    let cashChart = null;
+    let totChart  = null;
+
+    // Filter state
+    const state = {
+      cash: { days: 30, bucket: 'day', site: '' },
+      tot:  { metric: 'quantity', segment: 'item' },
+    };
+
+    function wireToggleGroup(id, key, attr, onChange) {
+      const group = document.getElementById(id);
+      group.addEventListener('click', e => {
+        const btn = e.target.closest('button[data-' + attr + ']');
+        if (!btn) return;
+        [...group.querySelectorAll('.toggle-btn')].forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        state[key][attr] = btn.dataset[attr];
+        onChange();
+      });
+    }
+
+    function pivotCashflow(rows) {
+      const buckets = [...new Set(rows.map(r => r.bucket))].sort();
+      const sites   = [...new Set(rows.map(r => r.site))];
+      const lookup = {};
+      rows.forEach(r => { lookup[r.bucket + '|' + r.site] = r.total; });
+      const datasets = sites.map((s, i) => ({
+        label: s,
+        data: buckets.map(b => lookup[b + '|' + s] || 0),
+        borderColor: PALETTE[i % PALETTE.length],
+        backgroundColor: PALETTE[i % PALETTE.length] + '33',
+        tension: 0.25,
+        fill: false,
+      }));
+      return { labels: buckets, datasets };
+    }
+
+    async function loadCashflow() {
+      const { days, bucket, site } = state.cash;
+      const params = new URLSearchParams({ bucket, since_days: days });
+      if (site) params.set('site', site);
+      const rows = await fetch('/api/cashflow?' + params).then(r => r.json());
+      const data = pivotCashflow(rows);
+      if (cashChart) cashChart.destroy();
+      cashChart = new Chart(document.getElementById('cash-chart'), {
+        type: 'line',
+        data,
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 11 } } } },
+          scales: {
+            y: { ticks: { callback: v => '$' + v } },
+            x: { ticks: { maxRotation: 0, autoSkip: true } },
+          },
+        },
+      });
+    }
+
+    async function loadTotals() {
+      const { metric, segment } = state.tot;
+      const rows = await fetch(`/api/totals?metric=${metric}&segment=${segment}`).then(r => r.json());
+      const labels = rows.map(r => r.label);
+      const values = rows.map(r => r.value);
+      if (totChart) totChart.destroy();
+      totChart = new Chart(document.getElementById('tot-chart'), {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [{
+            label: metric === 'weight' ? 'lbs' : 'qty',
+            data: values,
+            backgroundColor: labels.map((_, i) => PALETTE[i % PALETTE.length]),
+          }],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            y: { ticks: { callback: v => metric === 'weight' ? v + ' lb' : v } },
+            x: { ticks: { font: { size: 10 } } },
+          },
+        },
+      });
+    }
+
+    async function loadSitesIntoFilter() {
+      const sel = document.getElementById('cash-site');
+      const sites = await fetch('/api/sites').then(r => r.json());
+      const current = sel.value;
+      sel.innerHTML = '<option value="">All sites</option>' +
+        sites.map(s => `<option value="${s.canonical}">${s.canonical}</option>`).join('');
+      sel.value = current;
+    }
+
+    async function loadDashboard() {
+      const [inv, feed, sales] = await Promise.all([
+        fetch('/api/inventory').then(r => r.json()),
+        fetch('/api/feed?limit=25').then(r => r.json()),
+        fetch('/api/sales').then(r => r.json()),
+      ]);
+
+      // Stats
+      const low = inv.filter(i => i.quantity <= LOW_THRESHOLD).length;
+      document.getElementById('s-skus').textContent = inv.length;
+      document.getElementById('s-low').textContent = low;
+      document.getElementById('s-low').style.color = low > 0 ? 'var(--amber)' : 'var(--green)';
+      document.getElementById('s-today').textContent = fmt(sales.today_usd);
+      document.getElementById('s-total').textContent = fmt(sales.total_usd);
+      document.getElementById('s-txn').textContent = `${sales.transaction_count} transactions`;
+
+      // Inventory grid
+      const maxQty = Math.max(...inv.map(i => i.quantity), 1);
+      const grid = document.getElementById('inv-grid');
+      if (!inv.length) { grid.innerHTML = '<p class="empty">No inventory recorded yet.</p>'; }
+      else {
+        grid.innerHTML = inv.map(i => {
+          const s = statusClass(i.quantity);
+          const pct = Math.round((i.quantity / maxQty) * 100);
+          const badge = s === 'out' ? '<span class="badge badge-out">out</span>'
+                      : s === 'low' ? '<span class="badge badge-low">low</span>' : '';
+          const weight = i.total_weight_lbs > 0
+              ? `<div class="inv-weight">${i.total_weight_lbs.toFixed(1)} lbs total</div>`
+              : '';
+          const href = '/item/' + encodeURIComponent(i.item);
+          return `
+            <a class="inv-card" style="display:block; text-decoration:none; color:inherit;" href="${href}">
+              <div class="inv-item">${i.item}${badge}</div>
+              <div class="inv-time">${fmtTime(i.updated_at)}</div>
+              <div class="inv-qty qty-${s}">${i.quantity}<span class="inv-unit">${i.unit}</span></div>
+              ${weight}
+              <div class="bar-wrap"><div class="bar bar-${s}" style="width:${pct}%"></div></div>
+            </a>`;
+        }).join('');
+      }
+
+      // Feed
+      const ul = document.getElementById('feed');
+      if (!feed.length) { ul.innerHTML = '<li class="empty">No messages yet.</li>'; }
+      else {
+        ul.innerHTML = feed.map(ev => {
+          const p = ev.parsed;
+          const note = p?.note || (ev.parse_error ? 'Parse error' : ev.raw_body);
+          let icon = '📦', dotClass = 'dot-green';
+          if (p?.sale_usd) { icon = '$'; dotClass = 'dot-blue'; }
+          else if (ev.parse_error) { icon = '!'; dotClass = 'dot-red'; }
+          else if (!p?.changes?.length) { icon = '?'; dotClass = 'dot-amber'; }
+          const siteTag = p?.site ? ` · ${p.site}` : '';
+          return `
+            <li>
+              <div class="feed-dot ${dotClass}">${icon}</div>
+              <div>
+                <div class="feed-note">${note}</div>
+                <div class="feed-raw">"${ev.raw_body}"</div>
+                <div class="feed-meta">${fmtTime(ev.received_at)} · ${ev.from_number}${siteTag}</div>
+              </div>
+            </li>`;
+        }).join('');
+      }
+
+      document.getElementById('last-updated').textContent = `Updated ${fmtTime(new Date().toISOString().slice(0,19))}`;
+    }
+
+    function refreshAll() {
+      loadDashboard();
+      loadCashflow();
+      loadTotals();
+    }
+
+    // Wire controls
+    wireToggleGroup('cash-range', 'cash', 'days', loadCashflow);
+    wireToggleGroup('cash-bucket', 'cash', 'bucket', loadCashflow);
+    wireToggleGroup('tot-metric', 'tot', 'metric', loadTotals);
+    wireToggleGroup('tot-segment', 'tot', 'segment', loadTotals);
+    document.getElementById('cash-site').addEventListener('change', e => {
+      state.cash.site = e.target.value;
+      loadCashflow();
+    });
+
+    loadSitesIntoFilter().then(refreshAll);
+    setInterval(refreshAll, 30_000);
+  </script>
+</body>
+</html>
