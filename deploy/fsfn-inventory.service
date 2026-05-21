@@ -1,0 +1,23 @@
+[Unit]
+Description=FSFN Inventory (FastAPI/uvicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=fsfn
+Group=fsfn
+WorkingDirectory=/opt/fsfn-inventory
+EnvironmentFile=/etc/fsfn-inventory.env
+ExecStart=/opt/fsfn-inventory/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=3
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/fsfn-inventory
+
+[Install]
+WantedBy=multi-user.target

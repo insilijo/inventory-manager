@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Item · FSFN Inventory</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:#f8f7f4; --surface:#fff; --border:rgba(0,0,0,0.1);
+      --text:#1a1a18; --muted:#6b6b67; --hint:#9a9a96;
+      --green:#1D9E75; --amber:#BA7517; --red:#E24B4A; --blue:#185FA5;
+      --green-bg:#EAF3DE; --amber-bg:#FAEEDA; --red-bg:#FCEBEB; --blue-bg:#E6F1FB;
+      --radius:10px;
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+           background: var(--bg); color: var(--text); font-size: 15px; line-height: 1.5; }
+
+    header { background: var(--surface); border-bottom: 0.5px solid var(--border);
+             padding: 0 1.5rem; height: 52px; display: flex; align-items: center;
+             justify-content: space-between; position: sticky; top: 0; z-index: 10; }
+    header h1 { font-size: 15px; font-weight: 500; }
+    header nav a { font-size: 12px; color: var(--muted); margin-left: 1rem; text-decoration: none; }
+    header nav a:hover { color: var(--text); }
+
+    main { max-width: 900px; margin: 0 auto; padding: 1.5rem; }
+
+    .back { font-size: 12px; color: var(--muted); text-decoration: none; }
+    .back:hover { color: var(--text); }
+
+    h2 { font-size: 24px; font-weight: 500; margin: 0.5rem 0 0.25rem; }
+    .item-meta { color: var(--muted); font-size: 13px; margin-bottom: 1.5rem; }
+    .item-meta .alias { background: var(--bg); padding: 1px 6px; border-radius: 4px; margin-right: 4px; font-size: 11px; }
+
+    .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+                gap: 10px; margin-bottom: 1.75rem; }
+    .stat { background: var(--surface); border: 0.5px solid var(--border); border-radius: 8px; padding: 0.875rem 1rem; }
+    .stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase;
+                  letter-spacing: 0.05em; margin-bottom: 4px; }
+    .stat-value { font-size: 22px; font-weight: 500; }
+    .stat-sub    { font-size: 11px; color: var(--hint); margin-top: 3px; }
+
+    section + section { margin-top: 2rem; }
+    .section-title { font-size: 11px; font-weight: 500; color: var(--muted);
+                     text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 10px; }
+
+    table { width: 100%; background: var(--surface); border: 0.5px solid var(--border);
+            border-radius: var(--radius); border-collapse: separate; border-spacing: 0; overflow: hidden; }
+    th, td { padding: 10px 12px; text-align: left; font-size: 13px;
+             border-bottom: 0.5px solid var(--border); }
+    th { font-weight: 500; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; background: var(--bg); }
+    tr:last-child td { border-bottom: none; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+    .quality { display: inline-block; padding: 2px 7px; border-radius: 5px; font-size: 11px; font-weight: 500; }
+    .q5 { background: var(--green-bg); color: var(--green); }
+    .q4 { background: var(--green-bg); color: var(--green); }
+    .q3 { background: var(--amber-bg); color: var(--amber); }
+    .q2 { background: var(--amber-bg); color: var(--amber); }
+    .q1 { background: var(--red-bg); color: var(--red); }
+    .q-none { color: var(--hint); font-size: 11px; }
+
+    .empty { color: var(--hint); font-size: 13px; padding: 1rem 0; }
+
+    .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 8px; flex-wrap: wrap; }
+    .controls { display: flex; gap: 6px; align-items: center; }
+    .toggle-group { display: inline-flex; background: var(--bg); border-radius: 6px; padding: 2px; }
+    .toggle-btn { font-size: 11px; padding: 4px 10px; border: none; background: transparent;
+                  color: var(--muted); cursor: pointer; border-radius: 4px; font-family: inherit; }
+    .toggle-btn.active { background: var(--surface); color: var(--text); box-shadow: 0 0.5px 1px rgba(0,0,0,0.08); }
+    .chart-card { background: var(--surface); border: 0.5px solid var(--border);
+                  border-radius: var(--radius); padding: 1rem; }
+    .chart-wrap { position: relative; height: 240px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>FSFN Inventory</h1>
+    <nav><a href="/">Dashboard</a><a href="/admin">Admin</a></nav>
+  </header>
+
+  <main>
+    <a class="back" href="/">← Back to dashboard</a>
+    <div id="content"><p class="empty">Loading…</p></div>
+  </main>
+
+  <script>
+    const canonical = decodeURIComponent(location.pathname.replace(/^\/item\//, ''));
+    const PALETTE = ['#1D9E75', '#185FA5', '#BA7517', '#6B3FA0', '#167B82', '#E24B4A', '#8a8a86'];
+    let histChart = null;
+    const histState = { metric: 'quantity', bucket: 'day', days: 90 };
+
+    function fmtTime(iso) {
+      const d = new Date(iso + (iso.endsWith('Z') ? '' : 'Z'));
+      return d.toLocaleString();
+    }
+
+    function qualityCell(q) {
+      if (q == null) return '<span class="q-none">—</span>';
+      const rounded = Math.max(1, Math.round(q));
+      return `<span class="quality q${rounded}">${(+q).toFixed(1)}/5</span>`;
+    }
+
+    function pivot(rows) {
+      const buckets = [...new Set(rows.map(r => r.bucket))].sort();
+      const sites   = [...new Set(rows.map(r => r.site))];
+      const lookup = {};
+      rows.forEach(r => { lookup[r.bucket + '|' + r.site] = r.total; });
+      return {
+        labels: buckets,
+        datasets: sites.map((s, i) => ({
+          label: s,
+          data: buckets.map(b => lookup[b + '|' + s] || 0),
+          borderColor: PALETTE[i % PALETTE.length],
+          backgroundColor: PALETTE[i % PALETTE.length] + '33',
+          tension: 0.25,
+          fill: false,
+        })),
+      };
+    }
+
+    async function loadHistory() {
+      const { metric, bucket, days } = histState;
+      const params = new URLSearchParams({ metric, bucket, since_days: days });
+      const rows = await fetch(`/api/item/${encodeURIComponent(canonical)}/history?${params}`).then(r => r.json());
+      const data = pivot(rows);
+      if (histChart) histChart.destroy();
+      const canvas = document.getElementById('hist-chart');
+      if (!canvas) return;
+      histChart = new Chart(canvas, {
+        type: 'line',
+        data,
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 11 } } },
+            tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y}${metric === 'weight' ? ' lbs' : ''}` } },
+          },
+          scales: {
+            y: { beginAtZero: true, ticks: { callback: v => metric === 'weight' ? v + ' lb' : v } },
+            x: { ticks: { maxRotation: 0, autoSkip: true } },
+          },
+        },
+      });
+    }
+
+    function wireToggle(id, attr, onChange) {
+      const group = document.getElementById(id);
+      if (!group) return;
+      group.addEventListener('click', e => {
+        const btn = e.target.closest('button[data-' + attr + ']');
+        if (!btn) return;
+        [...group.querySelectorAll('.toggle-btn')].forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        histState[attr] = isNaN(+btn.dataset[attr]) ? btn.dataset[attr] : +btn.dataset[attr];
+        onChange();
+      });
+    }
+
+    async function load() {
+      const r = await fetch('/api/item/' + encodeURIComponent(canonical));
+      if (!r.ok) {
+        document.getElementById('content').innerHTML = `<p class="empty">Item "${canonical}" not found.</p>`;
+        return;
+      }
+      const d = await r.json();
+      const reg = d.registry;
+      const cur = d.current;
+      const aliases = reg?.aliases?.map(a => `<span class="alias">${a}</span>`).join('') || '';
+
+      const degradeSub = reg?.degrade_per_day
+          ? `-${reg.degrade_per_day}/day degrade`
+          : 'shelf-stable';
+
+      const avgInitial = d.avg_initial_quality;
+      const avgCurrent = d.avg_quality;
+
+      const stats = `
+        <div class="stat-row">
+          <div class="stat">
+            <div class="stat-label">Current quantity</div>
+            <div class="stat-value">${cur ? cur.quantity : 0}<span style="font-size:13px;color:var(--muted);"> ${cur?.unit || reg?.unit || 'units'}</span></div>
+            <div class="stat-sub">${cur ? 'Updated ' + fmtTime(cur.updated_at) : 'no current row'}</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Total weight on hand</div>
+            <div class="stat-value">${d.total_weight_lbs.toFixed(1)}<span style="font-size:13px;color:var(--muted);"> lbs</span></div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Avg quality (now)</div>
+            <div class="stat-value">${avgCurrent == null ? '—' : avgCurrent + ' / 5'}</div>
+            <div class="stat-sub">${avgInitial != null ? 'as received: ' + avgInitial + ' / 5' : ''} · ${degradeSub}</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Batches received</div>
+            <div class="stat-value">${d.batches.length}</div>
+          </div>
+        </div>`;
+
+      const rows = d.batches.map(b => {
+        const ageCell = b.days_old != null ? `${b.days_old.toFixed(1)}d` : '<span class="q-none">—</span>';
+        const qualityCol = b.current_quality != null
+            ? `${qualityCell(b.current_quality)} <span style="color:var(--hint); font-size:11px;">(from ${b.quality_score})</span>`
+            : qualityCell(b.quality_score);
+        return `
+        <tr>
+          <td>${fmtTime(b.received_at)}</td>
+          <td>${b.site}</td>
+          <td class="num">${b.quantity} ${b.unit}</td>
+          <td class="num">${b.weight_lbs != null ? b.weight_lbs.toFixed(1) + ' lbs' : '<span class="q-none">—</span>'}</td>
+          <td class="num">${ageCell}</td>
+          <td>${qualityCol}</td>
+          <td style="color:var(--muted)">${b.note || ''}</td>
+        </tr>`;
+      }).join('');
+
+      const table = d.batches.length ? `
+        <table>
+          <thead>
+            <tr><th>Received</th><th>Site</th><th class="num">Quantity</th><th class="num">Weight</th><th class="num">Age</th><th>Quality</th><th>Note</th></tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>` : '<p class="empty">No batch history yet.</p>';
+
+      const historyCard = `
+        <section class="chart-card">
+          <div class="section-header">
+            <div class="section-title">Receipt history (by site)</div>
+            <div class="controls">
+              <div class="toggle-group" id="hist-metric">
+                <button class="toggle-btn active" data-metric="quantity">Quantity</button>
+                <button class="toggle-btn" data-metric="weight">Weight</button>
+              </div>
+              <div class="toggle-group" id="hist-bucket">
+                <button class="toggle-btn active" data-bucket="day">Day</button>
+                <button class="toggle-btn" data-bucket="week">Week</button>
+                <button class="toggle-btn" data-bucket="month">Month</button>
+              </div>
+              <div class="toggle-group" id="hist-range">
+                <button class="toggle-btn" data-days="30">30d</button>
+                <button class="toggle-btn active" data-days="90">90d</button>
+                <button class="toggle-btn" data-days="365">1y</button>
+              </div>
+            </div>
+          </div>
+          <div class="chart-wrap"><canvas id="hist-chart"></canvas></div>
+        </section>`;
+
+      document.getElementById('content').innerHTML = `
+        <h2>${d.canonical}</h2>
+        <div class="item-meta">
+          ${reg ? `Registered unit: <strong>${reg.unit}</strong>` : 'Not in registry'}
+          ${reg?.weight_per_unit ? ` · ${reg.weight_per_unit} lbs/${reg.unit.replace(/s$/, '')} (estimated)` : ''}
+          ${aliases ? '<div style="margin-top:6px;">Aliases: ' + aliases + '</div>' : ''}
+        </div>
+        ${stats}
+        ${historyCard}
+        <section style="margin-top:2rem;">
+          <div class="section-title">Batches received</div>
+          ${table}
+        </section>`;
+
+      wireToggle('hist-metric', 'metric', loadHistory);
+      wireToggle('hist-bucket', 'bucket', loadHistory);
+      wireToggle('hist-range',  'days',   loadHistory);
+      loadHistory();
+    }
+
+    load();
+  </script>
+</body>
+</html>

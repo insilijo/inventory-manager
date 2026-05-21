@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin · FSFN Inventory</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:#f8f7f4; --surface:#fff; --border:rgba(0,0,0,0.1);
+      --text:#1a1a18; --muted:#6b6b67; --hint:#9a9a96;
+      --green:#1D9E75; --amber:#BA7517; --red:#E24B4A; --blue:#185FA5;
+      --green-bg:#EAF3DE; --amber-bg:#FAEEDA; --red-bg:#FCEBEB; --blue-bg:#E6F1FB;
+      --radius:10px;
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+           background: var(--bg); color: var(--text); font-size: 15px; line-height: 1.5; }
+
+    header { background: var(--surface); border-bottom: 0.5px solid var(--border);
+             padding: 0 1.5rem; height: 52px; display: flex; align-items: center;
+             justify-content: space-between; position: sticky; top: 0; z-index: 10; }
+    header h1 { font-size: 15px; font-weight: 500; }
+    header nav a { font-size: 12px; color: var(--muted); margin-left: 1rem; text-decoration: none; }
+    header nav a:hover { color: var(--text); }
+
+    main { max-width: 1000px; margin: 0 auto; padding: 1.5rem; }
+
+    h2 { font-size: 18px; font-weight: 500; margin-bottom: 0.75rem; }
+    .section-sub { color: var(--muted); font-size: 12px; margin-bottom: 1rem; }
+    section + section { margin-top: 2.5rem; }
+
+    .card { background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--radius); padding: 1rem; }
+
+    table { width: 100%; border-collapse: separate; border-spacing: 0; }
+    th, td { padding: 8px 10px; text-align: left; font-size: 13px;
+             border-bottom: 0.5px solid var(--border); vertical-align: middle; }
+    th { font-weight: 500; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+    tr:last-child td { border-bottom: none; }
+
+    input, select { font-family: inherit; font-size: 13px; padding: 5px 8px;
+                    border: 0.5px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); width: 100%; }
+    input[type="number"] { max-width: 100px; }
+    .alias-pill { display: inline-block; background: var(--bg); padding: 2px 7px; border-radius: 5px;
+                  font-size: 11px; margin-right: 4px; margin-bottom: 3px; }
+
+    button { font-family: inherit; font-size: 12px; padding: 5px 10px; border-radius: 6px; cursor: pointer;
+             border: 0.5px solid var(--border); background: var(--surface); color: var(--text); }
+    button.primary { background: var(--text); color: white; border-color: var(--text); }
+    button.danger { color: var(--red); border-color: var(--red); }
+    button:hover { background: var(--bg); }
+    button.primary:hover { background: #000; }
+    button.danger:hover { background: var(--red-bg); }
+
+    .add-row { display: grid; grid-template-columns: 1.5fr 1fr 1fr 1fr 2fr auto; gap: 8px; margin-top: 12px; align-items: center; }
+    .add-row.sites { grid-template-columns: 1.5fr 2fr auto; }
+
+    .empty { color: var(--hint); font-size: 13px; padding: 1rem 0; }
+    .toast { position: fixed; bottom: 20px; right: 20px; background: var(--text); color: white;
+             padding: 10px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity 0.2s; z-index: 100; }
+    .toast.show { opacity: 0.95; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>FSFN Inventory · Admin</h1>
+    <nav>
+      <a href="/">Dashboard</a><a href="/admin">Admin</a>
+      <form method="POST" action="/logout" style="display:inline; margin-left:1rem;">
+        <button type="submit" style="font-size:11px; padding:3px 8px; background:transparent; color:var(--muted); border:0.5px solid var(--border);">Sign out</button>
+      </form>
+    </nav>
+  </header>
+
+  <main>
+    <section>
+      <h2>Items registry</h2>
+      <div class="section-sub">Canonical food names, units, weight-per-unit estimates, and aliases the parser maps to.</div>
+      <div class="card">
+        <table>
+          <thead>
+            <tr><th>Canonical</th><th>Unit</th><th>lbs/unit</th><th title="Quality points lost per day in storage">degrade/day</th><th>Aliases (comma-separated to add)</th><th></th></tr>
+          </thead>
+          <tbody id="reg-body"></tbody>
+        </table>
+        <div class="add-row">
+          <input id="new-item-canonical" placeholder="e.g. carrot bags" />
+          <input id="new-item-unit"      placeholder="bags" />
+          <input id="new-item-weight"    type="number" step="0.1"  placeholder="lbs/unit" />
+          <input id="new-item-degrade"   type="number" step="0.05" placeholder="degrade/day" />
+          <input id="new-item-aliases"   placeholder="carrots, carrot, baby carrots" />
+          <button class="primary" id="add-item-btn">Add item</button>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Sites</h2>
+      <div class="section-sub">Locations the parser will map messages to. Aliases catch nicknames and typos.</div>
+      <div class="card">
+        <table>
+          <thead><tr><th>Canonical</th><th>Aliases (comma-separated to add)</th><th></th></tr></thead>
+          <tbody id="sites-body"></tbody>
+        </table>
+        <div class="add-row sites">
+          <input id="new-site-canonical" placeholder="e.g. north branch" />
+          <input id="new-site-aliases"   placeholder="north, north site, branch" />
+          <button class="primary" id="add-site-btn">Add site</button>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Unknown items</h2>
+      <div class="section-sub">Items volunteers texted that didn't match the registry. Map to an existing item (adds the raw text as an alias) or add as a new canonical.</div>
+      <div class="card">
+        <table>
+          <thead><tr><th>Raw text</th><th>From SMS</th><th>Seen</th><th>Resolve</th></tr></thead>
+          <tbody id="unk-body"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    function toast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 1800);
+    }
+
+    // Wrap fetch: redirect to /login on 401 so an expired session is handled cleanly
+    const _fetch = window.fetch;
+    window.fetch = async (...args) => {
+      const r = await _fetch(...args);
+      if (r.status === 401) {
+        location.href = '/login?next=' + encodeURIComponent(location.pathname);
+        throw new Error('redirecting to login');
+      }
+      return r;
+    };
+    function fmtTime(iso) { return new Date(iso + (iso.endsWith('Z') ? '' : 'Z')).toLocaleString(); }
+    const splitCsv = s => s.split(',').map(x => x.trim()).filter(Boolean);
+
+    let registryCache = [];
+
+    async function loadRegistry() {
+      const reg = await fetch('/api/registry').then(r => r.json());
+      registryCache = reg;
+      const tbody = document.getElementById('reg-body');
+      if (!reg.length) { tbody.innerHTML = '<tr><td colspan="5" class="empty">No items.</td></tr>'; return; }
+      tbody.innerHTML = reg.map(r => `
+        <tr data-canonical="${r.canonical}">
+          <td><strong>${r.canonical}</strong><div>${r.aliases.map(a => `<span class="alias-pill">${a}</span>`).join('')}</div></td>
+          <td><input class="edit-unit" value="${r.unit}" /></td>
+          <td><input class="edit-weight" type="number" step="0.1" value="${r.weight_per_unit ?? ''}" /></td>
+          <td><input class="edit-degrade" type="number" step="0.05" value="${r.degrade_per_day ?? 0}" /></td>
+          <td><input class="edit-aliases" placeholder="add: typo1, typo2" /></td>
+          <td>
+            <button class="primary save-btn">Save</button>
+            <button class="danger del-btn">Delete</button>
+          </td>
+        </tr>`).join('');
+
+      tbody.querySelectorAll('tr').forEach(tr => {
+        tr.querySelector('.save-btn').addEventListener('click', async () => {
+          const canonical = tr.dataset.canonical;
+          const degRaw = tr.querySelector('.edit-degrade').value;
+          const payload = {
+            unit: tr.querySelector('.edit-unit').value.trim() || null,
+            weight_per_unit: parseFloat(tr.querySelector('.edit-weight').value) || null,
+            degrade_per_day: degRaw === '' ? null : parseFloat(degRaw),
+            aliases: splitCsv(tr.querySelector('.edit-aliases').value),
+          };
+          const r = await fetch('/api/registry/' + encodeURIComponent(canonical), {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+          });
+          if (r.ok) { toast('Saved ' + canonical); loadRegistry(); }
+          else toast('Error saving');
+        });
+        tr.querySelector('.del-btn').addEventListener('click', async () => {
+          if (!confirm(`Delete "${tr.dataset.canonical}"? Existing batches/inventory rows are preserved.`)) return;
+          const r = await fetch('/api/registry/' + encodeURIComponent(tr.dataset.canonical), { method: 'DELETE' });
+          if (r.ok) { toast('Deleted'); loadRegistry(); }
+        });
+      });
+    }
+
+    async function addItem() {
+      const degRaw = document.getElementById('new-item-degrade').value;
+      const payload = {
+        canonical: document.getElementById('new-item-canonical').value.trim(),
+        unit: document.getElementById('new-item-unit').value.trim() || 'units',
+        weight_per_unit: parseFloat(document.getElementById('new-item-weight').value) || null,
+        degrade_per_day: degRaw === '' ? 0 : parseFloat(degRaw),
+        aliases: splitCsv(document.getElementById('new-item-aliases').value),
+      };
+      if (!payload.canonical) { toast('Canonical name required'); return; }
+      const r = await fetch('/api/registry', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      });
+      if (r.ok) {
+        ['new-item-canonical','new-item-unit','new-item-weight','new-item-degrade','new-item-aliases']
+          .forEach(i => document.getElementById(i).value = '');
+        toast('Added ' + payload.canonical);
+        loadRegistry();
+        loadUnknowns();
+      } else toast('Error adding item');
+    }
+
+    async function loadSites() {
+      const sites = await fetch('/api/sites').then(r => r.json());
+      const tbody = document.getElementById('sites-body');
+      if (!sites.length) { tbody.innerHTML = '<tr><td colspan="3" class="empty">No sites.</td></tr>'; return; }
+      tbody.innerHTML = sites.map(s => `
+        <tr data-canonical="${s.canonical}">
+          <td><strong>${s.canonical}</strong><div>${s.aliases.map(a => `<span class="alias-pill">${a}</span>`).join('')}</div></td>
+          <td><input class="site-aliases" placeholder="add: nickname, abbrev" /></td>
+          <td>
+            <button class="primary save-site-btn">Save</button>
+            <button class="danger del-site-btn">Delete</button>
+          </td>
+        </tr>`).join('');
+      tbody.querySelectorAll('tr').forEach(tr => {
+        tr.querySelector('.save-site-btn').addEventListener('click', async () => {
+          const payload = { aliases: splitCsv(tr.querySelector('.site-aliases').value) };
+          const r = await fetch('/api/sites/' + encodeURIComponent(tr.dataset.canonical), {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+          });
+          if (r.ok) { toast('Saved'); loadSites(); } else toast('Error');
+        });
+        tr.querySelector('.del-site-btn').addEventListener('click', async () => {
+          if (!confirm(`Delete site "${tr.dataset.canonical}"?`)) return;
+          const r = await fetch('/api/sites/' + encodeURIComponent(tr.dataset.canonical), { method: 'DELETE' });
+          if (r.ok) { toast('Deleted'); loadSites(); }
+        });
+      });
+    }
+
+    async function addSite() {
+      const payload = {
+        canonical: document.getElementById('new-site-canonical').value.trim(),
+        aliases: splitCsv(document.getElementById('new-site-aliases').value),
+      };
+      if (!payload.canonical) { toast('Canonical name required'); return; }
+      const r = await fetch('/api/sites', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      });
+      if (r.ok) {
+        ['new-site-canonical','new-site-aliases'].forEach(i => document.getElementById(i).value = '');
+        toast('Added ' + payload.canonical);
+        loadSites();
+      } else toast('Error adding site');
+    }
+
+    async function loadUnknowns() {
+      const items = await fetch('/api/unknowns').then(r => r.json());
+      const tbody = document.getElementById('unk-body');
+      if (!items.length) { tbody.innerHTML = '<tr><td colspan="4" class="empty">All clear — no unknowns to resolve.</td></tr>'; return; }
+      const opts = registryCache.map(r => `<option value="${r.canonical}">${r.canonical}</option>`).join('');
+      tbody.innerHTML = items.map(u => `
+        <tr data-id="${u.id}" data-raw="${u.raw_name}">
+          <td><strong>${u.raw_name}</strong></td>
+          <td style="color:var(--muted); font-size:12px;">"${u.raw_body || ''}"</td>
+          <td style="font-size:12px; color:var(--hint);">${fmtTime(u.seen_at)}</td>
+          <td>
+            <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+              <select class="map-target" style="min-width:140px;">${opts}</select>
+              <button class="map-btn">Map to existing</button>
+              <span style="color:var(--hint); font-size:11px;">or</span>
+              <input class="new-canonical" placeholder="new canonical name" style="min-width:140px;" />
+              <button class="primary add-new-btn">Add new</button>
+            </div>
+          </td>
+        </tr>`).join('');
+      tbody.querySelectorAll('tr').forEach(tr => {
+        tr.querySelector('.map-btn').addEventListener('click', async () => {
+          const target = tr.querySelector('.map-target').value;
+          const r = await fetch(`/api/unknowns/${tr.dataset.id}/resolve`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'map', canonical: target }),
+          });
+          if (r.ok) { toast(`Mapped ${tr.dataset.raw} → ${target}`); refreshAll(); }
+        });
+        tr.querySelector('.add-new-btn').addEventListener('click', async () => {
+          const name = tr.querySelector('.new-canonical').value.trim();
+          if (!name) { toast('Canonical name required'); return; }
+          const r = await fetch(`/api/unknowns/${tr.dataset.id}/resolve`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'add', canonical: name, unit: 'units' }),
+          });
+          if (r.ok) { toast(`Added ${name}`); refreshAll(); }
+        });
+      });
+    }
+
+    async function refreshAll() { await loadRegistry(); await loadSites(); await loadUnknowns(); }
+
+    document.getElementById('add-item-btn').addEventListener('click', addItem);
+    document.getElementById('add-site-btn').addEventListener('click', addSite);
+    refreshAll();
+  </script>
+</body>
+</html>

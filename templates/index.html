@@ -125,6 +125,7 @@
   <main>
     <div class="stat-row" id="stats">
       <div class="stat"><div class="stat-label">SKUs tracked</div><div class="stat-value" id="s-skus">—</div></div>
+      <div class="stat"><div class="stat-label">Total weight on hand</div><div class="stat-value" id="s-weight">—</div><div class="stat-sub">across all sites</div></div>
       <div class="stat"><div class="stat-label">Low / out of stock</div><div class="stat-value" id="s-low" style="color:var(--amber)">—</div></div>
       <div class="stat"><div class="stat-label">Sales today</div><div class="stat-value" id="s-today">—</div></div>
       <div class="stat"><div class="stat-label">Sales all time</div><div class="stat-value" id="s-total">—</div><div class="stat-sub" id="s-txn"></div></div>
@@ -305,7 +306,9 @@
 
       // Stats
       const low = inv.filter(i => i.quantity <= LOW_THRESHOLD).length;
+      const totalWeight = inv.reduce((a, i) => a + (i.total_weight_lbs || 0), 0);
       document.getElementById('s-skus').textContent = inv.length;
+      document.getElementById('s-weight').innerHTML = totalWeight.toFixed(0) + '<span style="font-size:13px;color:var(--muted);"> lbs</span>';
       document.getElementById('s-low').textContent = low;
       document.getElementById('s-low').style.color = low > 0 ? 'var(--amber)' : 'var(--green)';
       document.getElementById('s-today').textContent = fmt(sales.today_usd);

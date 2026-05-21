@@ -1,5 +1,6 @@
 import os
 import json
+import secrets
 import sqlite3
 import logging
 from datetime import datetime
@@ -7,21 +8,73 @@ from contextlib import contextmanager
 from typing import Optional
 
 import anthropic
-from fastapi import FastAPI, Request, Form, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, Request, Form, HTTPException, Depends
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.sessions import SessionMiddleware
 from twilio.request_validator import RequestValidator
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-app = FastAPI(title="FSFN Inventory")
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
 DB_PATH = os.getenv("DB_PATH", "inventory.db")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
 VALIDATE_TWILIO = os.getenv("VALIDATE_TWILIO", "true").lower() == "true"
+ADMIN_USER = os.getenv("ADMIN_USER", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+SESSION_SECRET = os.getenv("SESSION_SECRET", "")
+
+
+# ---------------------------------------------------------------------------
+# Production env validation — fail fast at import time
+# ---------------------------------------------------------------------------
+# When VALIDATE_TWILIO=true we assume production: refuse to start with any of
+# the credential env vars missing. Set VALIDATE_TWILIO=false for local dev.
+
+if VALIDATE_TWILIO:
+    missing = [k for k, v in [
+        ("TWILIO_AUTH_TOKEN", TWILIO_AUTH_TOKEN),
+        ("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY),
+        ("ADMIN_PASSWORD",    ADMIN_PASSWORD),
+        ("SESSION_SECRET",    SESSION_SECRET),
+    ] if not v]
+    if missing:
+        raise RuntimeError(
+            "Production mode (VALIDATE_TWILIO=true) requires env vars: "
+            + ", ".join(missing)
+            + ". Set VALIDATE_TWILIO=false for local dev."
+        )
+
+
+app = FastAPI(title="FSFN Inventory")
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SESSION_SECRET or secrets.token_urlsafe(32),
+    session_cookie="fsfn_session",
+    https_only=VALIDATE_TWILIO,  # only require HTTPS when in prod mode
+    same_site="lax",
+    max_age=60 * 60 * 12,  # 12 hours
+)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+# ---------------------------------------------------------------------------
+# Admin auth (session cookie)
+# ---------------------------------------------------------------------------
+
+def require_admin(request: Request) -> str:
+    """API-side admin check — returns 401 JSON when not logged in."""
+    if not ADMIN_PASSWORD:
+        raise HTTPException(status_code=503, detail="Admin auth not configured")
+    user = request.session.get("user")
+    if user != ADMIN_USER:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    return user
+
+
+def is_logged_in(request: Request) -> bool:
+    return bool(ADMIN_PASSWORD) and request.session.get("user") == ADMIN_USER
 
 # ---------------------------------------------------------------------------
 # Database
@@ -78,7 +131,8 @@ def init_db():
                 canonical TEXT    NOT NULL UNIQUE,
                 unit      TEXT    NOT NULL DEFAULT 'units',
                 aliases   TEXT    NOT NULL DEFAULT '[]',
-                weight_per_unit REAL
+                weight_per_unit REAL,
+                degrade_per_day REAL NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS unknown_items (
@@ -117,6 +171,8 @@ def init_db():
         # Idempotent migrations for older DBs
         if not column_exists(conn, "item_registry", "weight_per_unit"):
             conn.execute("ALTER TABLE item_registry ADD COLUMN weight_per_unit REAL")
+        if not column_exists(conn, "item_registry", "degrade_per_day"):
+            conn.execute("ALTER TABLE item_registry ADD COLUMN degrade_per_day REAL NOT NULL DEFAULT 0")
         if not column_exists(conn, "sales_log", "site_id"):
             conn.execute("ALTER TABLE sales_log ADD COLUMN site_id INTEGER REFERENCES sites(id)")
 
@@ -130,18 +186,19 @@ init_db()
 # Item registry helpers
 # ---------------------------------------------------------------------------
 
-# (canonical, unit, aliases, approx weight per unit in lbs)
+# (canonical, unit, aliases, approx weight per unit in lbs, quality points lost per day)
+# degrade_per_day expressed in quality-points-per-day; 0 = shelf-stable.
 DEFAULT_REGISTRY = [
-    ("lemon boxes",    "boxes",  ["lemons", "lmons", "lemon", "lemon box", "citrus boxes"], 30.0),
-    ("apple boxes",    "boxes",  ["apples", "apple", "apple box"], 40.0),
-    ("tomato flats",   "flats",  ["tomatoes", "tomato", "toms", "tomato flat"], 25.0),
-    ("bread loaves",   "loaves", ["bread", "loaf", "loaves", "bread loaf"], 1.0),
-    ("eggplant",       "units",  ["aubergine", "aubergines", "eggplants", "egg plant"], 1.0),
-    ("potato bags",    "bags",   ["potatoes", "potato", "spuds", "potato bag"], 10.0),
-    ("onion bags",     "bags",   ["onions", "onion", "onion bag"], 10.0),
-    ("mixed greens",   "bags",   ["greens", "salad", "salad bags", "mixed salad"], 1.0),
-    ("canned goods",   "cans",   ["cans", "tinned goods", "tins", "canned food"], 1.0),
-    ("dairy boxes",    "boxes",  ["dairy", "milk", "cheese", "dairy box"], 20.0),
+    ("lemon boxes",    "boxes",  ["lemons", "lmons", "lemon", "lemon box", "citrus boxes"], 30.0, 0.15),
+    ("apple boxes",    "boxes",  ["apples", "apple", "apple box"], 40.0, 0.2),
+    ("tomato flats",   "flats",  ["tomatoes", "tomato", "toms", "tomato flat"], 25.0, 0.4),
+    ("bread loaves",   "loaves", ["bread", "loaf", "loaves", "bread loaf"], 1.0, 0.5),
+    ("eggplant",       "units",  ["aubergine", "aubergines", "eggplants", "egg plant"], 1.0, 0.4),
+    ("potato bags",    "bags",   ["potatoes", "potato", "spuds", "potato bag"], 10.0, 0.05),
+    ("onion bags",     "bags",   ["onions", "onion", "onion bag"], 10.0, 0.05),
+    ("mixed greens",   "bags",   ["greens", "salad", "salad bags", "mixed salad"], 1.0, 0.6),
+    ("canned goods",   "cans",   ["cans", "tinned goods", "tins", "canned food"], 1.0, 0.0),
+    ("dairy boxes",    "boxes",  ["dairy", "milk", "cheese", "dairy box"], 20.0, 0.3),
 ]
 
 DEFAULT_SITES = [
@@ -156,10 +213,23 @@ def seed_registry_if_empty():
         count = conn.execute("SELECT COUNT(*) FROM item_registry").fetchone()[0]
         if count == 0:
             conn.executemany(
-                "INSERT OR IGNORE INTO item_registry (canonical, unit, aliases, weight_per_unit) VALUES (?, ?, ?, ?)",
-                [(c, u, json.dumps(a), w) for c, u, a, w in DEFAULT_REGISTRY],
+                """INSERT OR IGNORE INTO item_registry
+                   (canonical, unit, aliases, weight_per_unit, degrade_per_day)
+                   VALUES (?, ?, ?, ?, ?)""",
+                [(c, u, json.dumps(a), w, d) for c, u, a, w, d in DEFAULT_REGISTRY],
             )
             log.info("Seeded item registry with %d items", len(DEFAULT_REGISTRY))
+        else:
+            # Backfill weight_per_unit and degrade_per_day for default items that pre-date the columns
+            for c, _u, _a, w, d in DEFAULT_REGISTRY:
+                conn.execute(
+                    "UPDATE item_registry SET weight_per_unit=? WHERE canonical=? AND weight_per_unit IS NULL",
+                    (w, c),
+                )
+                conn.execute(
+                    "UPDATE item_registry SET degrade_per_day=? WHERE canonical=? AND COALESCE(degrade_per_day, 0)=0",
+                    (d, c),
+                )
 
         site_count = conn.execute("SELECT COUNT(*) FROM sites").fetchone()[0]
         if site_count == 0:
@@ -201,7 +271,7 @@ backfill_batches_from_inventory()
 def get_registry() -> list[dict]:
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT canonical, unit, aliases, weight_per_unit FROM item_registry ORDER BY canonical"
+            "SELECT canonical, unit, aliases, weight_per_unit, degrade_per_day FROM item_registry ORDER BY canonical"
         ).fetchall()
     return [
         {
@@ -209,6 +279,7 @@ def get_registry() -> list[dict]:
             "unit": r["unit"],
             "aliases": json.loads(r["aliases"]),
             "weight_per_unit": r["weight_per_unit"],
+            "degrade_per_day": r["degrade_per_day"],
         }
         for r in rows
     ]
@@ -571,15 +642,53 @@ def api_totals(metric: str = "quantity", segment: str = "item"):
 
 
 # ---------------------------------------------------------------------------
-# Item detail (splash page)
+# Item detail (splash page) + history
 # ---------------------------------------------------------------------------
+
+@app.get("/api/item/{canonical:path}/history")
+def api_item_history(
+    canonical: str,
+    bucket: str = "day",
+    since_days: int = 90,
+    metric: str = "quantity",
+):
+    """
+    Time-bucketed received quantity (or weight) for one item, segmented by site.
+    bucket: 'day' | 'week' | 'month'
+    metric: 'quantity' | 'weight'
+    """
+    canonical = canonical.lower().strip()
+    fmt = {
+        "day":   "%Y-%m-%d",
+        "week":  "%Y-W%W",
+        "month": "%Y-%m",
+    }.get(bucket, "%Y-%m-%d")
+    value_col = "SUM(b.weight_lbs)" if metric == "weight" else "SUM(b.quantity)"
+
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT strftime(?, b.received_at) AS bucket,
+                   COALESCE(s.canonical, 'unassigned') AS site,
+                   COALESCE({value_col}, 0) AS total
+            FROM inventory_batches b
+            LEFT JOIN sites s ON s.id = b.site_id
+            WHERE b.item = ?
+              AND b.received_at >= datetime('now', ?)
+            GROUP BY bucket, site
+            ORDER BY bucket ASC
+            """,
+            (fmt, canonical, f"-{int(since_days)} days"),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
 
 @app.get("/api/item/{canonical:path}")
 def api_item_detail(canonical: str):
     canonical = canonical.lower().strip()
     with get_db() as conn:
         reg = conn.execute(
-            "SELECT canonical, unit, aliases, weight_per_unit FROM item_registry WHERE canonical=?",
+            "SELECT canonical, unit, aliases, weight_per_unit, degrade_per_day FROM item_registry WHERE canonical=?",
             (canonical,),
         ).fetchone()
         inv = conn.execute(
@@ -602,9 +711,28 @@ def api_item_detail(canonical: str):
     if not reg and not inv and not batches:
         raise HTTPException(404, f"item '{canonical}' not found")
 
-    batches_list = [dict(b) for b in batches]
-    quality_vals = [b["quality_score"] for b in batches_list if b["quality_score"] is not None]
-    avg_quality = round(sum(quality_vals) / len(quality_vals), 2) if quality_vals else None
+    degrade = (reg["degrade_per_day"] or 0) if reg else 0
+    now = datetime.utcnow()
+
+    batches_list = []
+    for b in batches:
+        d = dict(b)
+        # Compute current degraded quality if we have a starting score and a degrade rate
+        if d["quality_score"] is not None:
+            received = datetime.fromisoformat(d["received_at"])
+            days_old = max(0.0, (now - received).total_seconds() / 86400.0)
+            d["days_old"] = round(days_old, 2)
+            current = d["quality_score"] - degrade * days_old
+            d["current_quality"] = round(max(0.0, current), 2)
+        else:
+            d["days_old"] = None
+            d["current_quality"] = None
+        batches_list.append(d)
+
+    current_quality_vals = [b["current_quality"] for b in batches_list if b["current_quality"] is not None]
+    initial_quality_vals = [b["quality_score"]   for b in batches_list if b["quality_score"]   is not None]
+    avg_current_quality = round(sum(current_quality_vals) / len(current_quality_vals), 2) if current_quality_vals else None
+    avg_initial_quality = round(sum(initial_quality_vals) / len(initial_quality_vals), 2) if initial_quality_vals else None
     total_weight = round(sum((b["weight_lbs"] or 0) for b in batches_list), 2)
 
     return {
@@ -612,7 +740,8 @@ def api_item_detail(canonical: str):
         "registry": dict(reg) | {"aliases": json.loads(reg["aliases"])} if reg else None,
         "current": dict(inv) if inv else None,
         "batches": batches_list,
-        "avg_quality": avg_quality,
+        "avg_quality": avg_current_quality,            # current (degraded)
+        "avg_initial_quality": avg_initial_quality,    # as-received
         "total_weight_lbs": total_weight,
     }
 
@@ -626,31 +755,35 @@ def api_registry():
     return get_registry()
 
 
-@app.post("/api/registry")
+@app.post("/api/registry", dependencies=[Depends(require_admin)])
 def api_registry_add(payload: dict):
     canonical = payload.get("canonical", "").lower().strip()
     unit = payload.get("unit", "units")
     aliases = payload.get("aliases", [])
     weight_per_unit = payload.get("weight_per_unit")
+    degrade_per_day = payload.get("degrade_per_day") or 0
     if not canonical:
         raise HTTPException(400, "canonical required")
     with get_db() as conn:
         conn.execute(
-            "INSERT INTO item_registry (canonical, unit, aliases, weight_per_unit) VALUES (?, ?, ?, ?)",
-            (canonical, unit, json.dumps(aliases), weight_per_unit),
+            """INSERT INTO item_registry
+               (canonical, unit, aliases, weight_per_unit, degrade_per_day)
+               VALUES (?, ?, ?, ?, ?)""",
+            (canonical, unit, json.dumps(aliases), weight_per_unit, degrade_per_day),
         )
     return {"ok": True, "canonical": canonical}
 
 
-@app.patch("/api/registry/{canonical:path}")
+@app.patch("/api/registry/{canonical:path}", dependencies=[Depends(require_admin)])
 def api_registry_update(canonical: str, payload: dict):
-    """Update an existing item: aliases (append), unit, weight_per_unit."""
+    """Update an existing item: aliases (append), unit, weight_per_unit, degrade_per_day."""
     new_aliases = payload.get("aliases")
     unit = payload.get("unit")
     weight_per_unit = payload.get("weight_per_unit")
+    degrade_per_day = payload.get("degrade_per_day")
     with get_db() as conn:
         row = conn.execute(
-            "SELECT aliases, unit, weight_per_unit FROM item_registry WHERE canonical=?", (canonical,)
+            "SELECT aliases FROM item_registry WHERE canonical=?", (canonical,)
         ).fetchone()
         if not row:
             raise HTTPException(404, "item not found")
@@ -658,13 +791,18 @@ def api_registry_update(canonical: str, payload: dict):
         if new_aliases:
             merged = list(dict.fromkeys(merged + new_aliases))
         conn.execute(
-            "UPDATE item_registry SET aliases=?, unit=COALESCE(?, unit), weight_per_unit=COALESCE(?, weight_per_unit) WHERE canonical=?",
-            (json.dumps(merged), unit, weight_per_unit, canonical),
+            """UPDATE item_registry
+               SET aliases=?,
+                   unit=COALESCE(?, unit),
+                   weight_per_unit=COALESCE(?, weight_per_unit),
+                   degrade_per_day=COALESCE(?, degrade_per_day)
+               WHERE canonical=?""",
+            (json.dumps(merged), unit, weight_per_unit, degrade_per_day, canonical),
         )
     return {"ok": True, "canonical": canonical, "aliases": merged}
 
 
-@app.delete("/api/registry/{canonical:path}")
+@app.delete("/api/registry/{canonical:path}", dependencies=[Depends(require_admin)])
 def api_registry_delete(canonical: str):
     with get_db() as conn:
         conn.execute("DELETE FROM item_registry WHERE canonical=?", (canonical,))
@@ -676,7 +814,7 @@ def api_sites():
     return get_sites()
 
 
-@app.post("/api/sites")
+@app.post("/api/sites", dependencies=[Depends(require_admin)])
 def api_sites_add(payload: dict):
     canonical = payload.get("canonical", "").lower().strip()
     aliases = payload.get("aliases", [])
@@ -690,7 +828,7 @@ def api_sites_add(payload: dict):
     return {"ok": True, "canonical": canonical}
 
 
-@app.patch("/api/sites/{canonical:path}")
+@app.patch("/api/sites/{canonical:path}", dependencies=[Depends(require_admin)])
 def api_sites_update(canonical: str, payload: dict):
     new_aliases = payload.get("aliases", [])
     with get_db() as conn:
@@ -702,14 +840,14 @@ def api_sites_update(canonical: str, payload: dict):
     return {"ok": True, "canonical": canonical, "aliases": merged}
 
 
-@app.delete("/api/sites/{canonical:path}")
+@app.delete("/api/sites/{canonical:path}", dependencies=[Depends(require_admin)])
 def api_sites_delete(canonical: str):
     with get_db() as conn:
         conn.execute("DELETE FROM sites WHERE canonical=?", (canonical,))
     return {"ok": True}
 
 
-@app.get("/api/unknowns")
+@app.get("/api/unknowns", dependencies=[Depends(require_admin)])
 def api_unknowns():
     with get_db() as conn:
         rows = conn.execute(
@@ -724,7 +862,7 @@ def api_unknowns():
     return [dict(r) for r in rows]
 
 
-@app.post("/api/unknowns/{unknown_id}/resolve")
+@app.post("/api/unknowns/{unknown_id}/resolve", dependencies=[Depends(require_admin)])
 def api_resolve_unknown(unknown_id: int, payload: dict):
     action = payload.get("action")
     canonical = payload.get("canonical", "").lower().strip()
@@ -784,8 +922,46 @@ def dashboard():
 
 
 @app.get("/admin", response_class=HTMLResponse)
-def admin_page():
-    return _render("templates/admin.html")
+def admin_page(request: Request):
+    if not is_logged_in(request):
+        return RedirectResponse(url="/login?next=/admin", status_code=303)
+    return HTMLResponse(_render("templates/admin.html"))
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request, next: str = "/admin"):
+    if is_logged_in(request):
+        return RedirectResponse(url=next, status_code=303)
+    return HTMLResponse(_render("templates/login.html"))
+
+
+@app.post("/login")
+def login_submit(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    next: str = Form("/admin"),
+):
+    if not ADMIN_PASSWORD:
+        raise HTTPException(status_code=503, detail="Admin auth not configured")
+    ok_user = secrets.compare_digest(username, ADMIN_USER)
+    ok_pass = secrets.compare_digest(password, ADMIN_PASSWORD)
+    if not (ok_user and ok_pass):
+        # Re-render the login page with an error flag
+        html = _render("templates/login.html").replace(
+            "<!--ERROR-->", '<p class="error">Invalid username or password.</p>'
+        )
+        return HTMLResponse(html, status_code=401)
+    request.session["user"] = ADMIN_USER
+    # Only allow same-origin redirects
+    safe_next = next if next.startswith("/") and not next.startswith("//") else "/admin"
+    return RedirectResponse(url=safe_next, status_code=303)
+
+
+@app.post("/logout")
+def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse(url="/login", status_code=303)
 
 
 @app.get("/item/{canonical:path}", response_class=HTMLResponse)
