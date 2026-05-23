@@ -110,6 +110,13 @@
 
     .empty { color: var(--hint); font-size: 13px; padding: 1rem 0; }
 
+    .view-tabs { display: flex; border-bottom: 0.5px solid var(--border); margin-bottom: 1.25rem; gap: 4px; }
+    .view-tab  { font-family: inherit; font-size: 13px; padding: 9px 18px; background: transparent;
+                 border: none; border-bottom: 2px solid transparent; color: var(--muted);
+                 cursor: pointer; font-weight: 500; }
+    .view-tab.active { color: var(--text); border-bottom-color: var(--text); }
+    .view-tab:hover { color: var(--text); }
+
     .tot-filter { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0 0 12px;
                   padding: 8px 10px; background: var(--bg); border-radius: 6px; max-height: 110px; overflow-y: auto; }
     .tot-filter label { font-size: 12px; color: var(--text); display: inline-flex;
@@ -126,7 +133,7 @@
   <header>
     <h1>FSFN Inventory</h1>
     <div style="display:flex; align-items:center;">
-      <nav><a href="/">Dashboard</a><a href="/history">History</a><a href="/admin">Admin</a><a href="/simulator">Simulator</a><a href="/reconcile">Reconcile</a><a href="/import">Import</a></nav>
+      <nav><a href="/">Dashboard</a><a href="/inventory">Inventory</a><a href="/history">History</a><a href="/admin">Admin</a><a href="/simulator">Simulator</a><a href="/reconcile">Reconcile</a><a href="/import">Import</a></nav>
       <span id="last-updated">Loading…</span>
     </div>
   </header>
@@ -140,44 +147,48 @@
       <div class="stat"><div class="stat-label">Sales all time</div><div class="stat-value" id="s-total">—</div><div class="stat-sub" id="s-txn"></div></div>
     </div>
 
-    <section class="chart-card">
-      <div class="section-header">
-        <div class="toggle-group" id="ts-tabs">
-          <button class="toggle-btn active" data-ts="cash">Cash flow</button>
-          <button class="toggle-btn" data-ts="att">Foot traffic</button>
-        </div>
-        <div class="controls" id="ts-controls">
-          <!-- per-tab controls swapped in by JS -->
-        </div>
-      </div>
-      <div class="chart-wrap"><canvas id="ts-chart"></canvas></div>
-    </section>
+    <div class="view-tabs" id="view-tabs">
+      <button class="view-tab active" data-view="ts">Time series</button>
+      <button class="view-tab" data-view="inv">Inventory</button>
+    </div>
 
-    <section class="chart-card">
-      <div class="section-header">
-        <div class="section-title">Totals</div>
-        <div class="controls">
-          <div class="toggle-group" id="tot-metric">
-            <button class="toggle-btn active" data-metric="quantity">Quantity</button>
-            <button class="toggle-btn" data-metric="weight">Weight (lbs)</button>
+    <div id="view-ts" class="view-pane">
+      <section class="chart-card">
+        <div class="section-header">
+          <div class="toggle-group" id="ts-tabs">
+            <button class="toggle-btn active" data-ts="cash">Cash flow</button>
+            <button class="toggle-btn" data-ts="att">Foot traffic</button>
           </div>
-          <div class="toggle-group" id="tot-segment">
-            <button class="toggle-btn active" data-segment="item">By item</button>
-            <button class="toggle-btn" data-segment="site">By site</button>
+          <div class="controls" id="ts-controls">
+            <!-- per-tab controls swapped in by JS -->
           </div>
         </div>
-      </div>
-      <div id="tot-filter" class="tot-filter"></div>
-      <div class="chart-wrap" style="height:340px;"><canvas id="tot-chart"></canvas></div>
-    </section>
+        <div class="chart-wrap"><canvas id="ts-chart"></canvas></div>
+      </section>
+    </div>
 
-    <section>
-      <div class="section-header">
-        <div class="section-title">Current inventory</div>
-        <a href="/api/inventory.csv" class="toggle-btn" style="text-decoration:none; padding:5px 10px; background:var(--bg);">Download CSV</a>
+    <div id="view-inv" class="view-pane" style="display:none;">
+      <section class="chart-card">
+        <div class="section-header">
+          <div class="section-title">Totals</div>
+          <div class="controls">
+            <div class="toggle-group" id="tot-metric">
+              <button class="toggle-btn active" data-metric="quantity">Quantity</button>
+              <button class="toggle-btn" data-metric="weight">Weight (lbs)</button>
+            </div>
+            <div class="toggle-group" id="tot-segment">
+              <button class="toggle-btn active" data-segment="item">By item</button>
+              <button class="toggle-btn" data-segment="site">By site</button>
+            </div>
+          </div>
+        </div>
+        <div id="tot-filter" class="tot-filter"></div>
+        <div class="chart-wrap" style="height:340px;"><canvas id="tot-chart"></canvas></div>
+      </section>
+      <div style="margin-top:0.75rem;">
+        <a href="/inventory" class="toggle-btn" style="text-decoration:none; padding:7px 12px; background:var(--bg);">Browse items &rarr;</a>
       </div>
-      <div class="inv-grid" id="inv-grid"><p class="empty">Loading…</p></div>
-    </section>
+    </div>
 
     <section>
       <div class="section-header">
@@ -321,6 +332,18 @@
       });
     }
 
+    // Top-level view tabs (Time series / Inventory)
+    document.getElementById('view-tabs').addEventListener('click', e => {
+      const btn = e.target.closest('button[data-view]'); if (!btn) return;
+      [...document.querySelectorAll('#view-tabs .view-tab')].forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const v = btn.dataset.view;
+      document.getElementById('view-ts').style.display  = v === 'ts'  ? '' : 'none';
+      document.getElementById('view-inv').style.display = v === 'inv' ? '' : 'none';
+      // Trigger a resize so chart.js redraws into the now-visible container
+      window.dispatchEvent(new Event('resize'));
+    });
+
     document.getElementById('ts-tabs').addEventListener('click', e => {
       const btn = e.target.closest('button[data-ts]'); if (!btn) return;
       [...document.querySelectorAll('#ts-tabs .toggle-btn')].forEach(b => b.classList.remove('active'));
@@ -407,8 +430,6 @@
         fetch('/api/inventory').then(r => r.json()),
         fetch('/api/sales').then(r => r.json()),
       ]);
-
-      // Stats
       const low = inv.filter(i => i.quantity <= LOW_THRESHOLD).length;
       const totalWeight = inv.reduce((a, i) => a + (i.total_weight_lbs || 0), 0);
       document.getElementById('s-skus').textContent = inv.length;
@@ -418,32 +439,6 @@
       document.getElementById('s-today').textContent = fmt(sales.today_usd);
       document.getElementById('s-total').textContent = fmt(sales.total_usd);
       document.getElementById('s-txn').textContent = `${sales.transaction_count} transactions`;
-
-      // Inventory grid
-      const maxQty = Math.max(...inv.map(i => i.quantity), 1);
-      const grid = document.getElementById('inv-grid');
-      if (!inv.length) { grid.innerHTML = '<p class="empty">No inventory recorded yet.</p>'; }
-      else {
-        grid.innerHTML = inv.map(i => {
-          const s = statusClass(i.quantity);
-          const pct = Math.round((i.quantity / maxQty) * 100);
-          const badge = s === 'out' ? '<span class="badge badge-out">out</span>'
-                      : s === 'low' ? '<span class="badge badge-low">low</span>' : '';
-          const weight = i.total_weight_lbs > 0
-              ? `<div class="inv-weight">${i.total_weight_lbs.toFixed(1)} lbs total</div>`
-              : '';
-          const href = '/item/' + encodeURIComponent(i.item);
-          return `
-            <a class="inv-card" style="display:block; text-decoration:none; color:inherit;" href="${href}">
-              <div class="inv-item">${i.item}${badge}</div>
-              <div class="inv-time">${fmtTime(i.updated_at)}</div>
-              <div class="inv-qty qty-${s}">${i.quantity}<span class="inv-unit">${i.unit}</span></div>
-              ${weight}
-              <div class="bar-wrap"><div class="bar bar-${s}" style="width:${pct}%"></div></div>
-            </a>`;
-        }).join('');
-      }
-
       document.getElementById('last-updated').textContent = `Updated ${fmtTime(new Date().toISOString().slice(0,19))}`;
     }
 

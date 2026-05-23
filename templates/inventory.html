@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Inventory · FSFN Inventory</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:#f8f7f4; --surface:#fff; --border:rgba(0,0,0,0.1);
+      --text:#1a1a18; --muted:#6b6b67; --hint:#9a9a96;
+      --green:#1D9E75; --amber:#BA7517; --red:#E24B4A; --blue:#185FA5;
+      --green-bg:#EAF3DE; --amber-bg:#FAEEDA; --red-bg:#FCEBEB; --blue-bg:#E6F1FB;
+      --radius:10px;
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+           background: var(--bg); color: var(--text); font-size: 15px; line-height: 1.5; }
+
+    header { background: var(--surface); border-bottom: 0.5px solid var(--border);
+             padding: 0 1.5rem; height: 52px; display: flex; align-items: center;
+             justify-content: space-between; position: sticky; top: 0; z-index: 10; }
+    header h1 { font-size: 15px; font-weight: 500; }
+    header nav a { font-size: 12px; color: var(--muted); margin-left: 1rem; text-decoration: none; }
+    header nav a:hover { color: var(--text); }
+
+    main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
+    h2 { font-size: 18px; font-weight: 500; margin-bottom: 0.5rem; }
+    .sub { color: var(--muted); font-size: 12px; margin-bottom: 1rem; }
+
+    .controls { display: flex; gap: 8px; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; }
+    .search { font-family: inherit; font-size: 14px; padding: 8px 10px;
+              border: 0.5px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text);
+              min-width: 280px; flex: 1; max-width: 420px; }
+    .search:focus { outline: none; border-color: var(--text); }
+    .toggle-group { display: inline-flex; background: var(--surface); border: 0.5px solid var(--border); border-radius: 6px; padding: 2px; }
+    .toggle-btn { font-size: 11px; padding: 5px 12px; border: none; background: transparent;
+                  color: var(--muted); cursor: pointer; border-radius: 4px; font-family: inherit; }
+    .toggle-btn.active { background: var(--bg); color: var(--text); }
+    .count { font-size: 12px; color: var(--muted); margin-left: auto; }
+
+    .inv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+    .inv-card { background: var(--surface); border: 0.5px solid var(--border);
+                border-radius: var(--radius); padding: 0.875rem 1rem;
+                text-decoration: none; color: inherit;
+                transition: border-color 0.15s, transform 0.15s; display: block; }
+    .inv-card:hover { border-color: rgba(0,0,0,0.25); transform: translateY(-1px); }
+    .inv-item  { font-size: 13px; font-weight: 500; margin-bottom: 2px; }
+    .inv-time  { font-size: 11px; color: var(--hint); margin-bottom: 10px; }
+    .inv-qty   { font-size: 22px; font-weight: 500; }
+    .inv-unit  { font-size: 12px; color: var(--muted); font-weight: 400; margin-left: 3px; }
+    .inv-weight { font-size: 11px; color: var(--muted); margin-top: 4px; }
+    .bar-wrap  { height: 3px; background: var(--border); border-radius: 2px; margin-top: 8px; }
+    .bar       { height: 3px; border-radius: 2px; transition: width 0.4s; }
+
+    .qty-ok    { color: var(--green); }
+    .qty-low   { color: var(--amber); }
+    .qty-out   { color: var(--red);   }
+    .bar-ok    { background: var(--green); }
+    .bar-low   { background: var(--amber); }
+    .bar-out   { background: var(--red);   }
+
+    .badge { display: inline-block; font-size: 10px; font-weight: 500; padding: 2px 7px;
+             border-radius: 5px; margin-left: 6px; vertical-align: middle; }
+    .badge-low { background: var(--amber-bg); color: var(--amber); }
+    .badge-out { background: var(--red-bg);   color: var(--red);   }
+
+    .empty { color: var(--hint); font-size: 13px; padding: 1rem 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>FSFN Inventory · Items</h1>
+    <nav>
+      <a href="/">Dashboard</a>
+      <a href="/inventory">Inventory</a>
+      <a href="/history">History</a>
+      <a href="/admin">Admin</a>
+      <a href="/simulator">Simulator</a>
+      <a href="/reconcile">Reconcile</a>
+      <a href="/import">Import</a>
+    </nav>
+  </header>
+
+  <main>
+    <h2>Current inventory</h2>
+    <div class="sub">Every item on hand. Click a card for the splash page with batches, charts, and adjustments.</div>
+
+    <div class="controls">
+      <input class="search" id="search" type="search" placeholder="Search by item name or alias…" autofocus />
+      <div class="toggle-group" id="status-filter">
+        <button class="toggle-btn active" data-status="all">All</button>
+        <button class="toggle-btn" data-status="ok">In stock</button>
+        <button class="toggle-btn" data-status="low">Low</button>
+        <button class="toggle-btn" data-status="out">Out</button>
+      </div>
+      <div class="toggle-group" id="sort">
+        <button class="toggle-btn active" data-sort="name">A–Z</button>
+        <button class="toggle-btn" data-sort="qty">Quantity</button>
+        <button class="toggle-btn" data-sort="weight">Weight</button>
+        <button class="toggle-btn" data-sort="recent">Recent</button>
+      </div>
+      <a href="/api/inventory.csv" class="toggle-btn" style="text-decoration:none; padding:6px 12px; background:var(--bg); color:var(--muted);">CSV</a>
+      <span class="count" id="count">—</span>
+    </div>
+
+    <div id="grid" class="inv-grid"><p class="empty">Loading…</p></div>
+  </main>
+
+  <script>
+    const LOW_THRESHOLD = 5;
+    const state = { q: '', status: 'all', sort: 'name' };
+    let cache = [];
+    let aliasIndex = {};   // canonical -> [aliases]
+
+    function fmtTime(iso) {
+      const d = new Date(iso + (iso.endsWith('Z') ? '' : 'Z'));
+      const diff = Math.round((Date.now() - d) / 1000);
+      if (diff < 60)   return `${diff}s ago`;
+      if (diff < 3600) return `${Math.round(diff/60)}m ago`;
+      if (diff < 86400) return `${Math.round(diff/3600)}h ago`;
+      return d.toLocaleDateString();
+    }
+    function statusClass(q) { return q === 0 ? 'out' : q <= LOW_THRESHOLD ? 'low' : 'ok'; }
+
+    function matches(item) {
+      const s = statusClass(item.quantity);
+      if (state.status !== 'all' && state.status !== s) return false;
+      if (state.q) {
+        const q = state.q.toLowerCase();
+        const aliases = aliasIndex[item.item] || [];
+        if (!item.item.toLowerCase().includes(q) &&
+            !aliases.some(a => a.toLowerCase().includes(q))) return false;
+      }
+      return true;
+    }
+
+    function sortRows(rows) {
+      const s = state.sort;
+      const c = [...rows];
+      if (s === 'name')    c.sort((a, b) => a.item.localeCompare(b.item));
+      if (s === 'qty')     c.sort((a, b) => b.quantity - a.quantity);
+      if (s === 'weight')  c.sort((a, b) => (b.total_weight_lbs || 0) - (a.total_weight_lbs || 0));
+      if (s === 'recent')  c.sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+      return c;
+    }
+
+    function render() {
+      const rows = sortRows(cache.filter(matches));
+      document.getElementById('count').textContent = `${rows.length} of ${cache.length} items`;
+      const grid = document.getElementById('grid');
+      if (!rows.length) { grid.innerHTML = '<p class="empty">No matching items.</p>'; return; }
+      const maxQty = Math.max(...rows.map(i => i.quantity), 1);
+      grid.innerHTML = rows.map(i => {
+        const s = statusClass(i.quantity);
+        const pct = Math.round((i.quantity / maxQty) * 100);
+        const badge = s === 'out' ? '<span class="badge badge-out">out</span>'
+                    : s === 'low' ? '<span class="badge badge-low">low</span>' : '';
+        const weight = i.total_weight_lbs > 0
+            ? `<div class="inv-weight">${i.total_weight_lbs.toFixed(1)} lbs total</div>`
+            : '';
+        return `
+          <a class="inv-card" href="/item/${encodeURIComponent(i.item)}">
+            <div class="inv-item">${i.item}${badge}</div>
+            <div class="inv-time">${fmtTime(i.updated_at)}</div>
+            <div class="inv-qty qty-${s}">${i.quantity}<span class="inv-unit">${i.unit}</span></div>
+            ${weight}
+            <div class="bar-wrap"><div class="bar bar-${s}" style="width:${pct}%"></div></div>
+          </a>`;
+      }).join('');
+    }
+
+    async function load() {
+      const [inv, reg] = await Promise.all([
+        fetch('/api/inventory').then(r => r.json()),
+        fetch('/api/registry').then(r => r.json()),
+      ]);
+      cache = inv;
+      aliasIndex = Object.fromEntries(reg.map(r => [r.canonical, r.aliases]));
+      render();
+    }
+
+    document.getElementById('search').addEventListener('input', e => {
+      state.q = e.target.value;
+      render();
+    });
+    document.getElementById('status-filter').addEventListener('click', e => {
+      const b = e.target.closest('button[data-status]'); if (!b) return;
+      [...document.querySelectorAll('#status-filter .toggle-btn')].forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      state.status = b.dataset.status;
+      render();
+    });
+    document.getElementById('sort').addEventListener('click', e => {
+      const b = e.target.closest('button[data-sort]'); if (!b) return;
+      [...document.querySelectorAll('#sort .toggle-btn')].forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      state.sort = b.dataset.sort;
+      render();
+    });
+
+    load();
+    setInterval(load, 60_000);
+  </script>
+</body>
+</html>

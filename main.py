@@ -1766,6 +1766,11 @@ def history_page():
     return HTMLResponse(_render("templates/history.html"))
 
 
+@app.get("/inventory", response_class=HTMLResponse)
+def inventory_page():
+    return HTMLResponse(_render("templates/inventory.html"))
+
+
 @app.get("/import", response_class=HTMLResponse)
 def import_page(request: Request):
     if not is_logged_in(request):
