@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#1a1a18" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="FSFN SMS" />
   <title>SMS Simulator · FSFN Inventory</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -13,129 +17,201 @@
       --green-bg:#EAF3DE; --amber-bg:#FAEEDA; --red-bg:#FCEBEB; --blue-bg:#E6F1FB;
       --radius:10px;
     }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-           background: var(--bg); color: var(--text); font-size: 15px; line-height: 1.5; }
+    html, body { height: 100%; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg); color: var(--text); font-size: 15px; line-height: 1.5;
+      padding-top: env(safe-area-inset-top);
+      padding-bottom: env(safe-area-inset-bottom);
+    }
 
-    header { background: var(--surface); border-bottom: 0.5px solid var(--border);
-             padding: 0 1.5rem; height: 52px; display: flex; align-items: center;
-             justify-content: space-between; position: sticky; top: 0; z-index: 10; }
-    header h1 { font-size: 15px; font-weight: 500; }
-    header nav { display: flex; align-items: center; gap: 1rem; }
-    header nav a { font-size: 12px; color: var(--muted); text-decoration: none; }
+    header {
+      background: var(--surface); border-bottom: 0.5px solid var(--border);
+      padding: 0 14px; min-height: 48px;
+      display: flex; align-items: center; justify-content: space-between;
+      position: sticky; top: 0; z-index: 10; gap: 8px;
+    }
+    header h1 { font-size: 14px; font-weight: 500; }
+    header nav {
+      display: flex; align-items: center; gap: 12px; overflow-x: auto;
+      -webkit-overflow-scrolling: touch; flex: 1; justify-content: flex-end;
+    }
+    header nav a {
+      font-size: 12px; color: var(--muted); text-decoration: none;
+      white-space: nowrap; padding: 4px 0;
+    }
     header nav a:hover { color: var(--text); }
-    header nav form button { font-size: 11px; padding: 3px 8px; background: transparent;
-                             color: var(--muted); border: 0.5px solid var(--border); border-radius: 6px;
-                             font-family: inherit; cursor: pointer; }
+    header nav a.current { color: var(--text); font-weight: 500; }
 
-    main { max-width: 880px; margin: 0 auto; padding: 1.5rem; }
+    main { max-width: 600px; margin: 0 auto; padding: 14px; }
 
-    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
-    @media (max-width: 740px) { .two-col { grid-template-columns: 1fr; } }
+    .card { background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--radius); padding: 14px; margin-bottom: 14px; }
+    h2 { font-size: 14px; font-weight: 500; margin-bottom: 4px; }
+    .sub { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
 
-    .card { background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--radius); padding: 1.25rem; }
-    h2 { font-size: 15px; font-weight: 500; margin-bottom: 0.5rem; }
-    .sub { color: var(--muted); font-size: 12px; margin-bottom: 1rem; }
+    /* From-number row: collapsed by default, expandable */
+    .from-row {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+      font-size: 12px; color: var(--muted);
+    }
+    .from-row .label { white-space: nowrap; }
+    .from-row .value { font-weight: 500; color: var(--text); }
+    .from-row .edit-btn { font-size: 12px; padding: 4px 8px; color: var(--muted); }
+    .from-row input { display: none; flex: 1; }
+    .from-row.editing input { display: block; }
+    .from-row.editing .value, .from-row.editing .edit-btn { display: none; }
 
-    label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase;
-            letter-spacing: 0.05em; margin: 1rem 0 4px; }
-    input, textarea { width: 100%; font-family: inherit; font-size: 14px; padding: 8px 10px;
-                      border: 0.5px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); }
-    textarea { resize: vertical; min-height: 110px; font-family: inherit; }
-    input:focus, textarea:focus { outline: none; border-color: var(--text); }
+    /* Big body textarea — primary input for the page */
+    textarea#body {
+      width: 100%; font-family: inherit; font-size: 16px; padding: 12px;
+      border: 0.5px solid var(--border); border-radius: 10px;
+      background: var(--surface); color: var(--text);
+      min-height: 130px; resize: vertical;
+    }
+    textarea#body:focus { outline: none; border-color: var(--text); }
 
-    button { font-family: inherit; font-size: 13px; padding: 8px 14px; border-radius: 6px;
-             cursor: pointer; border: 0.5px solid var(--border); background: var(--surface); color: var(--text); }
-    button.primary { background: var(--text); color: white; border-color: var(--text); font-weight: 500; }
-    button.primary:hover { background: #000; }
-    button:hover { background: var(--bg); }
-    button:disabled { opacity: 0.5; cursor: progress; }
+    /* iOS: any input <16px font auto-zooms. Force 16px everywhere a thumb hits. */
+    input.from-input { width: 100%; font-family: inherit; font-size: 16px; padding: 10px 12px;
+                       border: 0.5px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); }
+    input.from-input:focus { outline: none; border-color: var(--text); }
 
-    .quick { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-    .quick button { font-size: 11px; padding: 4px 10px; color: var(--muted); }
+    /* Quick templates as chips, wrap nicely */
+    .quick { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .quick button {
+      font-family: inherit; font-size: 13px; padding: 8px 12px; border-radius: 18px;
+      background: var(--bg); color: var(--text); border: 0.5px solid var(--border);
+      cursor: pointer;
+    }
+    .quick button:active { background: var(--border); }
 
-    pre { background: var(--bg); padding: 10px 12px; border-radius: 6px; font-size: 12px;
-          white-space: pre-wrap; word-break: break-word; max-height: 280px; overflow: auto;
-          font-family: ui-monospace, Menlo, Consolas, monospace; }
+    /* Send button: big, full-width on mobile, prominent */
+    .send-row { display: flex; gap: 8px; margin-top: 14px; }
+    .send-row button {
+      flex: 1;
+      font-family: inherit; font-size: 16px; font-weight: 500;
+      padding: 14px; border-radius: 10px;
+      background: var(--text); color: white; border: none;
+      cursor: pointer;
+    }
+    .send-row button:disabled { opacity: 0.5; }
+    .send-row button.secondary {
+      background: var(--surface); color: var(--muted);
+      border: 0.5px solid var(--border); flex: 0 0 auto; padding: 14px 18px;
+    }
 
-    .feed { list-style: none; max-height: 360px; overflow: auto; }
-    .feed li { display: flex; gap: 10px; padding: 8px 0;
-               border-bottom: 0.5px solid var(--border); align-items: flex-start; }
+    .hint { color: var(--hint); font-size: 11px; margin-top: 8px; text-align: center; }
+
+    /* Result panel */
+    .result { margin-top: 14px; }
+    .result-status {
+      font-size: 12px; padding: 4px 10px; border-radius: 4px;
+      display: inline-block; margin-bottom: 8px;
+    }
+    .ok-status  { background: var(--green-bg); color: var(--green); }
+    .err-status { background: var(--red-bg);   color: var(--red);   }
+    pre {
+      background: var(--bg); padding: 10px 12px; border-radius: 8px; font-size: 12px;
+      white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+    }
+
+    /* Recent activity, collapsed by default */
+    details.feed-card { background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--radius); padding: 0; }
+    details.feed-card summary {
+      list-style: none; padding: 12px 14px; cursor: pointer;
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: 14px; font-weight: 500;
+    }
+    details.feed-card summary::-webkit-details-marker { display: none; }
+    details.feed-card summary .count { font-size: 11px; color: var(--muted); }
+    details.feed-card[open] summary { border-bottom: 0.5px solid var(--border); }
+    .feed { list-style: none; padding: 0 14px 8px; max-height: 380px; overflow-y: auto; }
+    .feed li {
+      display: flex; gap: 10px; padding: 10px 0;
+      border-bottom: 0.5px solid var(--border); align-items: flex-start;
+    }
     .feed li:last-child { border-bottom: none; }
-    .feed-dot { width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
-                display: flex; align-items: center; justify-content: center; font-size: 12px; margin-top: 1px; }
+    .feed-dot {
+      width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; margin-top: 1px;
+    }
     .dot-green { background: var(--green-bg); color: var(--green); }
     .dot-blue  { background: var(--blue-bg);  color: var(--blue);  }
     .dot-amber { background: var(--amber-bg); color: var(--amber); }
     .dot-red   { background: var(--red-bg);   color: var(--red);   }
-    .feed-note { font-size: 12px; }
-    .feed-raw  { font-size: 11px; color: var(--muted); font-style: italic; }
-    .feed-meta { font-size: 10px; color: var(--hint); }
+    .feed-note { font-size: 13px; }
+    .feed-raw  { font-size: 11px; color: var(--muted); font-style: italic; margin-top: 1px; }
+    .feed-meta { font-size: 10px; color: var(--hint); margin-top: 1px; }
 
-    .toast { position: fixed; bottom: 20px; right: 20px; background: var(--text); color: white;
-             padding: 10px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity 0.2s; z-index: 100; }
+    .toast {
+      position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom));
+      transform: translateX(-50%); background: var(--text); color: white;
+      padding: 10px 18px; border-radius: 999px; font-size: 13px;
+      opacity: 0; transition: opacity 0.2s; z-index: 100;
+      pointer-events: none;
+    }
     .toast.show { opacity: 0.95; }
 
-    .result-status { font-size: 11px; padding: 2px 8px; border-radius: 4px; display: inline-block; margin-bottom: 8px; }
-    .ok-status   { background: var(--green-bg); color: var(--green); }
-    .err-status  { background: var(--red-bg);   color: var(--red);   }
-
-    .hint { color: var(--hint); font-size: 12px; margin-top: 6px; }
+    /* On wider screens, give the textarea a bit more breathing room and keep the page narrow */
+    @media (min-width: 740px) {
+      main { padding: 24px; }
+      textarea#body { min-height: 160px; font-size: 15px; }
+      .send-row button { font-size: 15px; }
+    }
   </style>
 </head>
 <body>
   <header>
-    <h1>FSFN Inventory · SMS Simulator</h1>
+    <h1>FSFN · Simulator</h1>
     <nav>
       <a href="/">Dashboard</a>
       <a href="/inventory">Inventory</a>
       <a href="/history">History</a>
+      <a href="/simulator" class="current">Simulator</a>
       <a href="/admin">Admin</a>
-      <a href="/simulator">Simulator</a>
-      <a href="/reconcile">Reconcile</a>
-      <a href="/import">Import</a>
-      <form method="POST" action="/logout"><button type="submit">Sign out</button></form>
     </nav>
   </header>
 
   <main>
-    <div class="two-col">
-      <div class="card">
-        <h2>Send a fake SMS</h2>
-        <div class="sub">Bypasses Twilio. Runs through the same parser and inventory pipeline as a real text.</div>
-
-        <label for="from">From number</label>
-        <input id="from" value="+15555550100" />
-
-        <label for="body">Message body</label>
-        <textarea id="body" placeholder="e.g. got 3 lemon boxes A grade at downtown"></textarea>
-
-        <div class="quick">
-          <button data-tpl="at downtown got 3 lemon boxes A grade">Restock (downtown)</button>
-          <button data-tpl="east side: 45 lbs apples kinda bruised">Restock w/ weight</button>
-          <button data-tpl="sold $180 today at downtown">Sales</button>
-          <button data-tpl="used 2 bread loaves gave out 5 mixed greens east side">Usage</button>
-          <button data-tpl="served 80 people today at downtown">Attendance</button>
-          <button data-tpl="got 4 dragonfruit boxes at warehouse">Unknown item</button>
-        </div>
-
-        <div style="margin-top:1rem; display:flex; gap:8px;">
-          <button class="primary" id="send-btn">Send</button>
-          <button id="clear-btn">Clear</button>
-        </div>
-        <div class="hint">Hint: Ctrl/Cmd+Enter sends.</div>
-
-        <div id="result" style="margin-top:1.25rem; display:none;">
-          <span class="result-status" id="result-status"></span>
-          <pre id="result-body"></pre>
-        </div>
+    <div class="card">
+      <div class="from-row" id="from-row">
+        <span class="label">From</span>
+        <span class="value" id="from-value">+15555550100</span>
+        <button class="edit-btn" id="from-edit" type="button">Change</button>
+        <input class="from-input" id="from" type="tel" inputmode="tel" value="+15555550100" />
       </div>
 
-      <div class="card">
-        <h2>Recent activity</h2>
-        <div class="sub">Latest events in the database (auto-refreshes after each send).</div>
-        <ul class="feed" id="feed"><li class="feed-meta">Loading…</li></ul>
+      <textarea id="body" placeholder="Type the message a volunteer would send…" autocomplete="off" autocorrect="on" autocapitalize="sentences" enterkeyhint="send"></textarea>
+
+      <div class="quick">
+        <button data-tpl="at downtown got 3 lemon boxes A grade">📦 Restock</button>
+        <button data-tpl="east side: 45 lbs apples kinda bruised">⚖️ +Weight</button>
+        <button data-tpl="sold $180 today at downtown">💵 Sales</button>
+        <button data-tpl="used 2 bread loaves gave out 5 mixed greens east side">📤 Usage</button>
+        <button data-tpl="served 80 people today at downtown">👤 Attendance</button>
+        <button data-tpl="got 4 dragonfruit boxes at warehouse">❓ Unknown</button>
+      </div>
+
+      <div class="send-row">
+        <button class="primary" id="send-btn" type="button">Send</button>
+        <button class="secondary" id="clear-btn" type="button">Clear</button>
+      </div>
+      <div class="hint">Send by tapping the button or pressing the keyboard's Send/Enter key.</div>
+
+      <div id="result" class="result" style="display:none;">
+        <span class="result-status" id="result-status"></span>
+        <pre id="result-body"></pre>
       </div>
     </div>
+
+    <details class="feed-card" id="feed-card">
+      <summary>
+        <span>Recent activity</span>
+        <span class="count" id="feed-count">—</span>
+      </summary>
+      <ul class="feed" id="feed"><li class="feed-meta" style="padding:12px 0;">Loading…</li></ul>
+    </details>
   </main>
 
   <div class="toast" id="toast"></div>
@@ -150,8 +226,8 @@
     function fmtTime(iso) {
       const d = new Date(iso + (iso.endsWith('Z') ? '' : 'Z'));
       const diff = Math.round((Date.now() - d) / 1000);
-      if (diff < 60)   return `${diff}s ago`;
-      if (diff < 3600) return `${Math.round(diff/60)}m ago`;
+      if (diff < 60)    return `${diff}s ago`;
+      if (diff < 3600)  return `${Math.round(diff/60)}m ago`;
       if (diff < 86400) return `${Math.round(diff/3600)}h ago`;
       return d.toLocaleString();
     }
@@ -166,22 +242,44 @@
       return r;
     };
 
+    // From-number: remember the last value across sessions
+    const fromInput = document.getElementById('from');
+    const fromValue = document.getElementById('from-value');
+    const fromRow   = document.getElementById('from-row');
+    const stored = localStorage.getItem('fsfn-sim-from');
+    if (stored) { fromInput.value = stored; fromValue.textContent = stored; }
+
+    document.getElementById('from-edit').addEventListener('click', () => {
+      fromRow.classList.add('editing');
+      fromInput.focus();
+      fromInput.select();
+    });
+    fromInput.addEventListener('blur', () => {
+      const v = fromInput.value.trim() || '+15555550100';
+      fromInput.value = v;
+      fromValue.textContent = v;
+      fromRow.classList.remove('editing');
+      localStorage.setItem('fsfn-sim-from', v);
+    });
+
     async function loadFeed() {
       const items = await fetch('/api/feed?limit=15').then(r => r.json());
+      document.getElementById('feed-count').textContent = items.length ? `${items.length} events` : 'no events yet';
       const ul = document.getElementById('feed');
-      if (!items.length) { ul.innerHTML = '<li class="feed-meta">No events yet.</li>'; return; }
+      if (!items.length) { ul.innerHTML = '<li class="feed-meta" style="padding:12px 0;">No events yet.</li>'; return; }
       ul.innerHTML = items.map(ev => {
         const p = ev.parsed;
         const note = p?.note || (ev.parse_error ? 'Parse error' : ev.raw_body);
         let icon = '📦', dotClass = 'dot-green';
         if (p?.sale_usd) { icon = '$'; dotClass = 'dot-blue'; }
         else if (ev.parse_error) { icon = '!'; dotClass = 'dot-red'; }
-        else if (!p?.changes?.length) { icon = '?'; dotClass = 'dot-amber'; }
+        else if (!p?.changes?.length && !p?.people_count) { icon = '?'; dotClass = 'dot-amber'; }
+        else if (p?.people_count) { icon = '👤'; dotClass = 'dot-blue'; }
         const siteTag = p?.site ? ` · ${p.site}` : '';
         return `
           <li>
             <div class="feed-dot ${dotClass}">${icon}</div>
-            <div>
+            <div style="flex:1; min-width:0;">
               <div class="feed-note">${note}</div>
               <div class="feed-raw">"${ev.raw_body}"</div>
               <div class="feed-meta">${fmtTime(ev.received_at)} · ${ev.from_number}${siteTag}</div>
@@ -190,17 +288,17 @@
       }).join('');
     }
 
+    const bodyEl   = document.getElementById('body');
+    const sendBtn  = document.getElementById('send-btn');
+    const resultEl = document.getElementById('result');
+    const statusEl = document.getElementById('result-status');
+    const respEl   = document.getElementById('result-body');
+
     async function send() {
-      const from = document.getElementById('from').value.trim();
-      const body = document.getElementById('body').value.trim();
-      if (!body) { toast('Enter a message body'); return; }
-      const btn = document.getElementById('send-btn');
-      btn.disabled = true; btn.textContent = 'Sending…';
-
-      const result = document.getElementById('result');
-      const status = document.getElementById('result-status');
-      const bodyEl = document.getElementById('result-body');
-
+      const from = fromInput.value.trim();
+      const body = bodyEl.value.trim();
+      if (!body) { toast('Type a message first'); bodyEl.focus(); return; }
+      sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
       try {
         const r = await fetch('/api/simulate', {
           method: 'POST',
@@ -209,35 +307,41 @@
         });
         const j = await r.json();
         const ok = r.ok && !j.parse_error;
-        status.textContent = ok ? `Event #${j.event_id} parsed OK` : (j.parse_error || 'Error');
-        status.className = 'result-status ' + (ok ? 'ok-status' : 'err-status');
-        bodyEl.textContent = JSON.stringify(j.parsed ?? j, null, 2);
-        result.style.display = 'block';
-        if (ok) toast('Sent');
+        statusEl.textContent = ok ? `Event #${j.event_id} parsed OK` : (j.parse_error || 'Error');
+        statusEl.className = 'result-status ' + (ok ? 'ok-status' : 'err-status');
+        respEl.textContent = JSON.stringify(j.parsed ?? j, null, 2);
+        resultEl.style.display = 'block';
+        if (ok) {
+          toast('Sent ✓');
+          bodyEl.value = '';
+          bodyEl.focus();
+        }
         await loadFeed();
       } catch (e) {
         toast('Error: ' + e.message);
       } finally {
-        btn.disabled = false; btn.textContent = 'Send';
+        sendBtn.disabled = false; sendBtn.textContent = 'Send';
       }
     }
 
-    document.getElementById('send-btn').addEventListener('click', send);
+    sendBtn.addEventListener('click', send);
     document.getElementById('clear-btn').addEventListener('click', () => {
-      document.getElementById('body').value = '';
-      document.getElementById('result').style.display = 'none';
-      document.getElementById('body').focus();
+      bodyEl.value = ''; resultEl.style.display = 'none'; bodyEl.focus();
     });
-    document.getElementById('body').addEventListener('keydown', e => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') send();
+    // Plain Enter sends on mobile keyboards (enterkeyhint=send). Shift+Enter inserts newline.
+    bodyEl.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
     });
     document.querySelectorAll('.quick button').forEach(b => {
       b.addEventListener('click', () => {
-        document.getElementById('body').value = b.dataset.tpl;
-        document.getElementById('body').focus();
+        bodyEl.value = b.dataset.tpl;
+        bodyEl.focus();
+        // Place cursor at end
+        const v = bodyEl.value; bodyEl.value = ''; bodyEl.value = v;
       });
     });
 
+    bodyEl.focus();
     loadFeed();
     setInterval(loadFeed, 15_000);
   </script>
