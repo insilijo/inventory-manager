@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>FSFN Inventory</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <script src="/static/charts.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -65,7 +66,7 @@
 
     .chart-card { background: var(--surface); border: 0.5px solid var(--border);
                   border-radius: var(--radius); padding: 1rem; }
-    .chart-wrap { position: relative; height: 260px; }
+    .chart-wrap { position: relative; height: 280px; }
 
     .inv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 10px; }
     .inv-card { background: var(--surface); border: 0.5px solid var(--border);
@@ -109,15 +110,23 @@
 
     .empty { color: var(--hint); font-size: 13px; padding: 1rem 0; }
 
-    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-    @media (max-width: 720px) { .two-col { grid-template-columns: 1fr; } }
+    .tot-filter { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0 0 12px;
+                  padding: 8px 10px; background: var(--bg); border-radius: 6px; max-height: 110px; overflow-y: auto; }
+    .tot-filter label { font-size: 12px; color: var(--text); display: inline-flex;
+                        align-items: center; gap: 5px; cursor: pointer; user-select: none; }
+    .tot-filter input { accent-color: var(--text); }
+    .tot-filter .actions { margin-left: auto; display: flex; gap: 6px; }
+    .tot-filter .actions button { font-size: 11px; padding: 2px 8px; border-radius: 4px;
+                                  border: 0.5px solid var(--border); background: var(--surface);
+                                  color: var(--muted); cursor: pointer; font-family: inherit; }
+    .tot-filter .actions button:hover { color: var(--text); }
   </style>
 </head>
 <body>
   <header>
     <h1>FSFN Inventory</h1>
     <div style="display:flex; align-items:center;">
-      <nav><a href="/">Dashboard</a><a href="/admin">Admin</a></nav>
+      <nav><a href="/">Dashboard</a><a href="/history">History</a><a href="/admin">Admin</a><a href="/simulator">Simulator</a><a href="/reconcile">Reconcile</a><a href="/import">Import</a></nav>
       <span id="last-updated">Loading…</span>
     </div>
   </header>
@@ -131,59 +140,65 @@
       <div class="stat"><div class="stat-label">Sales all time</div><div class="stat-value" id="s-total">—</div><div class="stat-sub" id="s-txn"></div></div>
     </div>
 
-    <div class="two-col">
-      <section class="chart-card">
-        <div class="section-header">
-          <div class="section-title">Cash flow</div>
-          <div class="controls">
-            <select class="filter" id="cash-site"><option value="">All sites</option></select>
-            <div class="toggle-group" id="cash-range">
-              <button class="toggle-btn" data-days="7">7d</button>
-              <button class="toggle-btn active" data-days="30">30d</button>
-              <button class="toggle-btn" data-days="90">90d</button>
-            </div>
-            <div class="toggle-group" id="cash-bucket">
-              <button class="toggle-btn" data-bucket="hour">Hour</button>
-              <button class="toggle-btn active" data-bucket="day">Day</button>
-              <button class="toggle-btn" data-bucket="week">Week</button>
-            </div>
-          </div>
+    <section class="chart-card">
+      <div class="section-header">
+        <div class="toggle-group" id="ts-tabs">
+          <button class="toggle-btn active" data-ts="cash">Cash flow</button>
+          <button class="toggle-btn" data-ts="att">Foot traffic</button>
         </div>
-        <div class="chart-wrap"><canvas id="cash-chart"></canvas></div>
-      </section>
+        <div class="controls" id="ts-controls">
+          <!-- per-tab controls swapped in by JS -->
+        </div>
+      </div>
+      <div class="chart-wrap"><canvas id="ts-chart"></canvas></div>
+    </section>
 
-      <section class="chart-card">
-        <div class="section-header">
-          <div class="section-title">Totals</div>
-          <div class="controls">
-            <div class="toggle-group" id="tot-metric">
-              <button class="toggle-btn active" data-metric="quantity">Quantity</button>
-              <button class="toggle-btn" data-metric="weight">Weight (lbs)</button>
-            </div>
-            <div class="toggle-group" id="tot-segment">
-              <button class="toggle-btn active" data-segment="item">By item</button>
-              <button class="toggle-btn" data-segment="site">By site</button>
-            </div>
+    <section class="chart-card">
+      <div class="section-header">
+        <div class="section-title">Totals</div>
+        <div class="controls">
+          <div class="toggle-group" id="tot-metric">
+            <button class="toggle-btn active" data-metric="quantity">Quantity</button>
+            <button class="toggle-btn" data-metric="weight">Weight (lbs)</button>
+          </div>
+          <div class="toggle-group" id="tot-segment">
+            <button class="toggle-btn active" data-segment="item">By item</button>
+            <button class="toggle-btn" data-segment="site">By site</button>
           </div>
         </div>
-        <div class="chart-wrap"><canvas id="tot-chart"></canvas></div>
-      </section>
-    </div>
+      </div>
+      <div id="tot-filter" class="tot-filter"></div>
+      <div class="chart-wrap" style="height:340px;"><canvas id="tot-chart"></canvas></div>
+    </section>
 
     <section>
-      <div class="section-header"><div class="section-title">Current inventory</div></div>
+      <div class="section-header">
+        <div class="section-title">Current inventory</div>
+        <a href="/api/inventory.csv" class="toggle-btn" style="text-decoration:none; padding:5px 10px; background:var(--bg);">Download CSV</a>
+      </div>
       <div class="inv-grid" id="inv-grid"><p class="empty">Loading…</p></div>
     </section>
 
     <section>
-      <div class="section-header"><div class="section-title">Recent SMS activity</div></div>
-      <ul class="feed" id="feed"><li class="empty">Loading…</li></ul>
+      <div class="section-header">
+        <div class="section-title">Tables</div>
+        <div class="controls">
+          <div class="toggle-group" id="tbl-tabs">
+            <button class="toggle-btn active" data-tbl="sales">Sales</button>
+            <button class="toggle-btn" data-tbl="attendance">Attendance</button>
+            <button class="toggle-btn" data-tbl="batches">Batches</button>
+            <button class="toggle-btn" data-tbl="adjustments">Adjustments</button>
+          </div>
+          <a id="tbl-csv" href="/api/sales.csv" class="toggle-btn" style="text-decoration:none; padding:5px 10px; background:var(--bg);">Download CSV</a>
+        </div>
+      </div>
+      <div id="tbl-body" class="chart-card" style="padding:0; overflow:hidden;"><p class="empty" style="padding:1rem;">Loading…</p></div>
     </section>
   </main>
 
   <script>
     const LOW_THRESHOLD = 5;
-    const PALETTE = ['#1D9E75', '#185FA5', '#BA7517', '#6B3FA0', '#167B82', '#E24B4A', '#8a8a86'];
+    const PALETTE = FSFN.PALETTE;
 
     function fmt(n) { return new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0}).format(n); }
     function fmtTime(iso) {
@@ -202,13 +217,15 @@
     }
 
     // Chart instances
-    let cashChart = null;
-    let totChart  = null;
+    let tsChart  = null;
+    let totChart = null;
 
     // Filter state
     const state = {
+      tsTab: 'cash',
       cash: { days: 30, bucket: 'day', site: '' },
-      tot:  { metric: 'quantity', segment: 'item' },
+      tot:  { metric: 'quantity', segment: 'item', excluded: new Set() },
+      att:  { days: 90, bucket: 'week', site: '' },
     };
 
     function wireToggleGroup(id, key, attr, onChange) {
@@ -223,47 +240,130 @@
       });
     }
 
-    function pivotCashflow(rows) {
-      const buckets = [...new Set(rows.map(r => r.bucket))].sort();
-      const sites   = [...new Set(rows.map(r => r.site))];
-      const lookup = {};
-      rows.forEach(r => { lookup[r.bucket + '|' + r.site] = r.total; });
-      const datasets = sites.map((s, i) => ({
-        label: s,
-        data: buckets.map(b => lookup[b + '|' + s] || 0),
-        borderColor: PALETTE[i % PALETTE.length],
-        backgroundColor: PALETTE[i % PALETTE.length] + '33',
-        tension: 0.25,
-        fill: false,
-      }));
-      return { labels: buckets, datasets };
-    }
+    // --- Time-series tabs (cash flow + foot traffic) ---
+    const TS_CONFIG = {
+      cash: {
+        title: 'Cash flow',
+        endpoint: '/api/cashflow',
+        ranges: [['7d', 7], ['30d', 30, true], ['90d', 90]],
+        buckets: [['Hour', 'hour'], ['Day', 'day', true], ['Week', 'week']],
+        yFmt: v => '$' + v,
+        tipFmt: ctx => `${ctx.dataset.label}: $${ctx.parsed.y}`,
+      },
+      att: {
+        title: 'Foot traffic',
+        endpoint: '/api/attendance',
+        ranges: [['30d', 30], ['90d', 90, true], ['1y', 365]],
+        buckets: [['Day', 'day'], ['Week', 'week', true], ['Month', 'month']],
+        yFmt: v => v,
+        tipFmt: ctx => `${ctx.dataset.label}: ${ctx.parsed.y} people`,
+      },
+    };
 
-    async function loadCashflow() {
-      const { days, bucket, site } = state.cash;
-      const params = new URLSearchParams({ bucket, since_days: days });
-      if (site) params.set('site', site);
-      const rows = await fetch('/api/cashflow?' + params).then(r => r.json());
-      const data = pivotCashflow(rows);
-      if (cashChart) cashChart.destroy();
-      cashChart = new Chart(document.getElementById('cash-chart'), {
-        type: 'line',
-        data,
-        options: {
-          responsive: true, maintainAspectRatio: false,
-          interaction: { mode: 'index', intersect: false },
-          plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 11 } } } },
-          scales: {
-            y: { ticks: { callback: v => '$' + v } },
-            x: { ticks: { maxRotation: 0, autoSkip: true } },
-          },
-        },
+    function renderTsControls() {
+      const tab = state.tsTab;
+      const cfg = TS_CONFIG[tab];
+      const s   = state[tab];
+      const ctrl = document.getElementById('ts-controls');
+      ctrl.innerHTML = `
+        <select class="filter" id="ts-site"><option value="">All sites</option></select>
+        <div class="toggle-group" id="ts-range">
+          ${cfg.ranges.map(([lbl, days]) => `<button class="toggle-btn ${s.days === days ? 'active' : ''}" data-days="${days}">${lbl}</button>`).join('')}
+        </div>
+        <div class="toggle-group" id="ts-bucket">
+          ${cfg.buckets.map(([lbl, b]) => `<button class="toggle-btn ${s.bucket === b ? 'active' : ''}" data-bucket="${b}">${lbl}</button>`).join('')}
+        </div>
+      `;
+      // Populate sites dropdown
+      loadSitesInto('ts-site', s.site);
+
+      document.getElementById('ts-range').addEventListener('click', e => {
+        const b = e.target.closest('button[data-days]'); if (!b) return;
+        state[tab].days = +b.dataset.days;
+        renderTsControls(); loadTimeSeries();
+      });
+      document.getElementById('ts-bucket').addEventListener('click', e => {
+        const b = e.target.closest('button[data-bucket]'); if (!b) return;
+        state[tab].bucket = b.dataset.bucket;
+        renderTsControls(); loadTimeSeries();
+      });
+      document.getElementById('ts-site').addEventListener('change', e => {
+        state[tab].site = e.target.value;
+        loadTimeSeries();
       });
     }
 
-    async function loadTotals() {
-      const { metric, segment } = state.tot;
-      const rows = await fetch(`/api/totals?metric=${metric}&segment=${segment}`).then(r => r.json());
+    async function loadSitesInto(selectId, currentValue) {
+      const sel = document.getElementById(selectId);
+      if (!sel) return;
+      const sites = await fetch('/api/sites').then(r => r.json());
+      sel.innerHTML = '<option value="">All sites</option>' +
+        sites.map(s => `<option value="${s.canonical}">${s.canonical}</option>`).join('');
+      sel.value = currentValue || '';
+    }
+
+    async function loadTimeSeries() {
+      const tab = state.tsTab;
+      const cfg = TS_CONFIG[tab];
+      const s   = state[tab];
+      const params = new URLSearchParams({ bucket: s.bucket, since_days: s.days });
+      if (s.site) params.set('site', s.site);
+      const rows = await fetch(`${cfg.endpoint}?${params}`).then(r => r.json());
+      const data = FSFN.pivotBucketed(rows);
+      if (tsChart) tsChart.destroy();
+      tsChart = new Chart(document.getElementById('ts-chart'), {
+        type: 'line',
+        data,
+        options: FSFN.baseChartOptions({
+          plugins: { tooltip: { callbacks: { label: cfg.tipFmt } } },
+          scales: { y: { ticks: { callback: cfg.yFmt } } },
+        }),
+      });
+    }
+
+    document.getElementById('ts-tabs').addEventListener('click', e => {
+      const btn = e.target.closest('button[data-ts]'); if (!btn) return;
+      [...document.querySelectorAll('#ts-tabs .toggle-btn')].forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.tsTab = btn.dataset.ts;
+      renderTsControls(); loadTimeSeries();
+    });
+
+    // --- Totals (bar) with item/site include checkboxes ---
+    let totsLastRows = [];
+
+    function renderTotFilter(rows) {
+      const el = document.getElementById('tot-filter');
+      if (!rows.length) { el.innerHTML = ''; return; }
+      const labels = rows.map(r => r.label);
+      const cbs = labels.map(l => {
+        const checked = state.tot.excluded.has(l) ? '' : 'checked';
+        return `<label><input type="checkbox" data-label="${l}" ${checked}/>${l}</label>`;
+      }).join('');
+      el.innerHTML = cbs + `
+        <span class="actions">
+          <button data-act="all">All</button>
+          <button data-act="none">None</button>
+        </span>`;
+      el.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+        cb.addEventListener('change', e => {
+          const lbl = e.target.dataset.label;
+          if (e.target.checked) state.tot.excluded.delete(lbl);
+          else                  state.tot.excluded.add(lbl);
+          drawTotals();
+        });
+      });
+      el.querySelectorAll('button[data-act]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          if (btn.dataset.act === 'all')  state.tot.excluded.clear();
+          else                            labels.forEach(l => state.tot.excluded.add(l));
+          renderTotFilter(rows); drawTotals();
+        });
+      });
+    }
+
+    function drawTotals() {
+      const rows = totsLastRows.filter(r => !state.tot.excluded.has(r.label));
       const labels = rows.map(r => r.label);
       const values = rows.map(r => r.value);
       if (totChart) totChart.destroy();
@@ -272,35 +372,39 @@
         data: {
           labels,
           datasets: [{
-            label: metric === 'weight' ? 'lbs' : 'qty',
+            label: state.tot.metric === 'weight' ? 'lbs' : 'qty',
             data: values,
             backgroundColor: labels.map((_, i) => PALETTE[i % PALETTE.length]),
+            borderWidth: 0,
+            borderRadius: 4,
           }],
         },
-        options: {
-          responsive: true, maintainAspectRatio: false,
+        options: FSFN.baseChartOptions({
           plugins: { legend: { display: false } },
           scales: {
-            y: { ticks: { callback: v => metric === 'weight' ? v + ' lb' : v } },
-            x: { ticks: { font: { size: 10 } } },
+            y: { ticks: { callback: v => state.tot.metric === 'weight' ? v + ' lb' : v } },
+            x: { ticks: { maxRotation: 60, minRotation: 45, autoSkip: false, font: { size: 10 } } },
           },
-        },
+        }),
       });
     }
 
-    async function loadSitesIntoFilter() {
-      const sel = document.getElementById('cash-site');
-      const sites = await fetch('/api/sites').then(r => r.json());
-      const current = sel.value;
-      sel.innerHTML = '<option value="">All sites</option>' +
-        sites.map(s => `<option value="${s.canonical}">${s.canonical}</option>`).join('');
-      sel.value = current;
+    async function loadTotals() {
+      const { metric, segment } = state.tot;
+      const rows = await fetch(`/api/totals?metric=${metric}&segment=${segment}`).then(r => r.json());
+      totsLastRows = rows;
+      // Reset exclusions when segment changes so old labels don't persist
+      const valid = new Set(rows.map(r => r.label));
+      for (const e of [...state.tot.excluded]) if (!valid.has(e)) state.tot.excluded.delete(e);
+      renderTotFilter(rows);
+      drawTotals();
     }
 
+    // (Sites are loaded per-tab inside renderTsControls now.)
+
     async function loadDashboard() {
-      const [inv, feed, sales] = await Promise.all([
+      const [inv, sales] = await Promise.all([
         fetch('/api/inventory').then(r => r.json()),
-        fetch('/api/feed?limit=25').then(r => r.json()),
         fetch('/api/sales').then(r => r.json()),
       ]);
 
@@ -340,50 +444,104 @@
         }).join('');
       }
 
-      // Feed
-      const ul = document.getElementById('feed');
-      if (!feed.length) { ul.innerHTML = '<li class="empty">No messages yet.</li>'; }
-      else {
-        ul.innerHTML = feed.map(ev => {
-          const p = ev.parsed;
-          const note = p?.note || (ev.parse_error ? 'Parse error' : ev.raw_body);
-          let icon = '📦', dotClass = 'dot-green';
-          if (p?.sale_usd) { icon = '$'; dotClass = 'dot-blue'; }
-          else if (ev.parse_error) { icon = '!'; dotClass = 'dot-red'; }
-          else if (!p?.changes?.length) { icon = '?'; dotClass = 'dot-amber'; }
-          const siteTag = p?.site ? ` · ${p.site}` : '';
-          return `
-            <li>
-              <div class="feed-dot ${dotClass}">${icon}</div>
-              <div>
-                <div class="feed-note">${note}</div>
-                <div class="feed-raw">"${ev.raw_body}"</div>
-                <div class="feed-meta">${fmtTime(ev.received_at)} · ${ev.from_number}${siteTag}</div>
-              </div>
-            </li>`;
-        }).join('');
-      }
-
       document.getElementById('last-updated').textContent = `Updated ${fmtTime(new Date().toISOString().slice(0,19))}`;
     }
 
-    function refreshAll() {
-      loadDashboard();
-      loadCashflow();
-      loadTotals();
+    // -------- Tabbed tables (replaces the SMS feed area) --------
+    const TABLES = {
+      sales: {
+        endpoint: '/api/sales/list',
+        csv: '/api/sales.csv',
+        columns: [
+          { label: 'When',   key: 'recorded_at', fmt: fmtTime },
+          { label: 'Site',   key: 'site' },
+          { label: 'Amount', key: 'amount_usd', cls: 'num', fmt: v => fmt(v) },
+          { label: 'Note',   key: 'note' },
+        ],
+      },
+      attendance: {
+        endpoint: '/api/attendance/list',
+        csv: '/api/attendance.csv',
+        columns: [
+          { label: 'When',   key: 'recorded_at', fmt: fmtTime },
+          { label: 'Site',   key: 'site' },
+          { label: 'People', key: 'people_count', cls: 'num' },
+          { label: 'Note',   key: 'note' },
+        ],
+      },
+      batches: {
+        endpoint: '/api/batches',
+        csv: '/api/batches.csv',
+        columns: [
+          { label: 'Received', key: 'received_at', fmt: fmtTime },
+          { label: 'Item',     key: 'item' },
+          { label: 'Site',     key: 'site' },
+          { label: 'Quantity', key: 'quantity', cls: 'num' },
+          { label: 'Weight',   key: 'weight_lbs', cls: 'num', fmt: v => v != null ? v.toFixed(1) + ' lbs' : '—' },
+          { label: 'Quality',  key: 'quality_score', cls: 'num', fmt: v => v != null ? v + '/5' : '—' },
+        ],
+      },
+      adjustments: {
+        endpoint: '/api/adjustments',
+        csv: '/api/adjustments.csv',
+        columns: [
+          { label: 'When',   key: 'recorded_at', fmt: fmtTime },
+          { label: 'Item',   key: 'item' },
+          { label: 'Kind',   key: 'kind' },
+          { label: 'Δ qty',  key: 'delta_quantity', cls: 'num', fmt: v => v > 0 ? '+' + v : v },
+          { label: 'Amount', key: 'amount_usd', cls: 'num', fmt: v => v != null ? fmt(v) : '—' },
+          { label: 'To',     key: 'recipient', fmt: v => v || '—' },
+          { label: 'Note',   key: 'note' },
+        ],
+      },
+    };
+
+    let activeTbl = 'sales';
+
+    async function loadTable() {
+      const cfg = TABLES[activeTbl];
+      document.getElementById('tbl-csv').href = cfg.csv;
+      const rows = await fetch(cfg.endpoint + '?limit=25').then(r => r.json());
+      const el = document.getElementById('tbl-body');
+      if (!rows.length) { el.innerHTML = '<p class="empty" style="padding:1rem;">No rows.</p>'; return; }
+      const tdfmt = (col, v) => {
+        if (v == null || v === '') return '<span style="color:var(--hint)">—</span>';
+        return col.fmt ? col.fmt(v) : v;
+      };
+      el.innerHTML = `
+        <table style="width:100%; border-collapse:separate; border-spacing:0;">
+          <thead>
+            <tr>${cfg.columns.map(c => `<th style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; text-align:${c.cls === 'num' ? 'right' : 'left'}; padding:9px 12px; border-bottom:0.5px solid var(--border); background:var(--bg);">${c.label}</th>`).join('')}</tr>
+          </thead>
+          <tbody>
+            ${rows.map(r => `
+              <tr>${cfg.columns.map(c => `<td style="font-size:12px; padding:8px 12px; border-bottom:0.5px solid var(--border); text-align:${c.cls === 'num' ? 'right' : 'left'}; font-variant-numeric:${c.cls === 'num' ? 'tabular-nums' : 'normal'};">${tdfmt(c, r[c.key])}</td>`).join('')}</tr>
+            `).join('')}
+          </tbody>
+        </table>`;
     }
 
-    // Wire controls
-    wireToggleGroup('cash-range', 'cash', 'days', loadCashflow);
-    wireToggleGroup('cash-bucket', 'cash', 'bucket', loadCashflow);
-    wireToggleGroup('tot-metric', 'tot', 'metric', loadTotals);
-    wireToggleGroup('tot-segment', 'tot', 'segment', loadTotals);
-    document.getElementById('cash-site').addEventListener('change', e => {
-      state.cash.site = e.target.value;
-      loadCashflow();
+    document.getElementById('tbl-tabs').addEventListener('click', e => {
+      const btn = e.target.closest('button[data-tbl]');
+      if (!btn) return;
+      [...document.querySelectorAll('#tbl-tabs .toggle-btn')].forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      activeTbl = btn.dataset.tbl;
+      loadTable();
     });
 
-    loadSitesIntoFilter().then(refreshAll);
+    function refreshAll() {
+      loadDashboard();
+      loadTimeSeries();
+      loadTotals();
+      loadTable();
+    }
+
+    wireToggleGroup('tot-metric', 'tot', 'metric', loadTotals);
+    wireToggleGroup('tot-segment', 'tot', 'segment', loadTotals);
+
+    renderTsControls();
+    refreshAll();
     setInterval(refreshAll, 30_000);
   </script>
 </body>

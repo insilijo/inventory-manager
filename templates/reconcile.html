@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Reconcile · FSFN Inventory</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:#f8f7f4; --surface:#fff; --border:rgba(0,0,0,0.1);
+      --text:#1a1a18; --muted:#6b6b67; --hint:#9a9a96;
+      --green:#1D9E75; --amber:#BA7517; --red:#E24B4A; --blue:#185FA5;
+      --green-bg:#EAF3DE; --amber-bg:#FAEEDA; --red-bg:#FCEBEB; --blue-bg:#E6F1FB;
+      --radius:10px;
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+           background: var(--bg); color: var(--text); font-size: 15px; line-height: 1.5; }
+
+    header { background: var(--surface); border-bottom: 0.5px solid var(--border);
+             padding: 0 1.5rem; height: 52px; display: flex; align-items: center;
+             justify-content: space-between; position: sticky; top: 0; z-index: 10; }
+    header h1 { font-size: 15px; font-weight: 500; }
+    header nav { display: flex; align-items: center; gap: 1rem; }
+    header nav a { font-size: 12px; color: var(--muted); text-decoration: none; }
+    header nav a:hover { color: var(--text); }
+    header nav form button { font-size: 11px; padding: 3px 8px; background: transparent;
+                             color: var(--muted); border: 0.5px solid var(--border); border-radius: 6px;
+                             font-family: inherit; cursor: pointer; }
+
+    main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
+
+    h2 { font-size: 18px; font-weight: 500; margin-bottom: 0.5rem; }
+    .sub { color: var(--muted); font-size: 12px; margin-bottom: 1rem; }
+    section + section { margin-top: 2.5rem; }
+
+    .site-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-bottom: 1rem; }
+    .site-card { background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--radius); padding: 0.875rem 1rem; }
+    .site-name { font-size: 14px; font-weight: 500; margin-bottom: 8px; }
+    .site-row  { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+    .site-row strong { color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }
+    .unassigned-card { border-color: var(--amber); }
+    .unassigned-card .site-name { color: var(--amber); }
+
+    .card { background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--radius); padding: 1rem; }
+    table { width: 100%; border-collapse: separate; border-spacing: 0; }
+    th, td { padding: 8px 10px; text-align: left; font-size: 12px;
+             border-bottom: 0.5px solid var(--border); vertical-align: middle; }
+    th { font-weight: 500; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+    tr:last-child td { border-bottom: none; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+    select, button { font-family: inherit; font-size: 12px; padding: 5px 8px;
+                     border-radius: 6px; border: 0.5px solid var(--border); background: var(--surface); color: var(--text); }
+    button.primary { background: var(--text); color: white; border-color: var(--text); cursor: pointer; }
+    button.primary:hover { background: #000; }
+
+    .empty { color: var(--hint); font-size: 13px; padding: 1rem 0; }
+    .pill { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 4px; }
+    .pill-warn { background: var(--amber-bg); color: var(--amber); }
+    .pill-ok   { background: var(--green-bg); color: var(--green); }
+
+    .toast { position: fixed; bottom: 20px; right: 20px; background: var(--text); color: white;
+             padding: 10px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity 0.2s; z-index: 100; }
+    .toast.show { opacity: 0.95; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>FSFN Inventory · Reconcile</h1>
+    <nav>
+      <a href="/">Dashboard</a>
+      <a href="/history">History</a>
+      <a href="/admin">Admin</a>
+      <a href="/simulator">Simulator</a>
+      <a href="/reconcile">Reconcile</a>
+      <a href="/import">Import</a>
+      <form method="POST" action="/logout"><button type="submit">Sign out</button></form>
+    </nav>
+  </header>
+
+  <main>
+    <section>
+      <h2>Per-site rollups</h2>
+      <div class="sub">Sales and foot traffic broken down by site. Unassigned rows are flagged in amber — reassign them below.</div>
+      <div id="site-grid" class="site-grid"><div class="empty">Loading…</div></div>
+    </section>
+
+    <section>
+      <h2>Unassigned sales <span class="pill pill-warn" id="us-count">0</span></h2>
+      <div class="sub">Sales that came in without a recognized site (Claude returned null or the SMS didn't mention one).</div>
+      <div class="card" id="us-card"><div class="empty">Loading…</div></div>
+    </section>
+
+    <section>
+      <h2>Unassigned foot traffic <span class="pill pill-warn" id="ua-count">0</span></h2>
+      <div class="sub">Attendance events without a recognized site.</div>
+      <div class="card" id="ua-card"><div class="empty">Loading…</div></div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    function toast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 1800);
+    }
+    function fmtTime(iso) {
+      const d = new Date(iso + (iso.endsWith('Z') ? '' : 'Z'));
+      return d.toLocaleString();
+    }
+    function fmt(n) { return new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0}).format(n); }
+
+    const _fetch = window.fetch;
+    window.fetch = async (...args) => {
+      const r = await _fetch(...args);
+      if (r.status === 401) {
+        location.href = '/login?next=' + encodeURIComponent(location.pathname);
+        throw new Error('redirecting to login');
+      }
+      return r;
+    };
+
+    let sites = [];
+
+    function siteOptions(selected) {
+      return ['<option value="">— pick a site —</option>']
+        .concat(sites.map(s => `<option value="${s.canonical}" ${s.canonical===selected?'selected':''}>${s.canonical}</option>`))
+        .join('');
+    }
+
+    async function load() {
+      sites = await fetch('/api/sites').then(r => r.json());
+      const d = await fetch('/api/reconcile/summary').then(r => r.json());
+
+      // Build per-site cards keyed by site name
+      const salesIdx = Object.fromEntries(d.sales_per_site.map(r => [r.site, r]));
+      const attIdx   = Object.fromEntries(d.attendance_per_site.map(r => [r.site, r]));
+      const allSites = [...new Set([...d.sales_per_site.map(r=>r.site), ...d.attendance_per_site.map(r=>r.site)])];
+      const grid = document.getElementById('site-grid');
+      if (!allSites.length) { grid.innerHTML = '<div class="empty">No data yet.</div>'; }
+      else {
+        grid.innerHTML = allSites.sort().map(s => {
+          const isUnassigned = s === 'unassigned';
+          const sales = salesIdx[s] || {count:0,total_usd:0};
+          const att   = attIdx[s]   || {count:0,total_people:0};
+          return `
+            <div class="site-card ${isUnassigned ? 'unassigned-card' : ''}">
+              <div class="site-name">${s}</div>
+              <div class="site-row"><span>Sales (${sales.count})</span><strong>${fmt(sales.total_usd)}</strong></div>
+              <div class="site-row"><span>People served (${att.count})</span><strong>${att.total_people}</strong></div>
+            </div>`;
+        }).join('');
+      }
+
+      // Unassigned sales
+      document.getElementById('us-count').textContent = d.unassigned_sales.length;
+      const usCard = document.getElementById('us-card');
+      if (!d.unassigned_sales.length) { usCard.innerHTML = '<div class="empty">All clear — every sale has a site.</div>'; }
+      else {
+        usCard.innerHTML = `
+          <table>
+            <thead><tr><th>When</th><th class="num">Amount</th><th>Source SMS</th><th>Note</th><th>Assign to site</th></tr></thead>
+            <tbody>
+              ${d.unassigned_sales.map(r => `
+                <tr data-id="${r.id}">
+                  <td>${fmtTime(r.recorded_at)}</td>
+                  <td class="num">${fmt(r.amount_usd)}</td>
+                  <td style="color:var(--muted)">${r.raw_body ? '"'+r.raw_body+'"' : '<span style="color:var(--hint)">—</span>'}</td>
+                  <td style="color:var(--muted)">${r.note || ''}</td>
+                  <td>
+                    <select class="site-pick">${siteOptions('')}</select>
+                    <button class="primary assign-sale">Assign</button>
+                  </td>
+                </tr>`).join('')}
+            </tbody>
+          </table>`;
+        usCard.querySelectorAll('.assign-sale').forEach(btn => {
+          btn.addEventListener('click', async (e) => {
+            const tr = e.currentTarget.closest('tr');
+            const site = tr.querySelector('.site-pick').value;
+            if (!site) { toast('Pick a site'); return; }
+            const r = await fetch(`/api/sales/${tr.dataset.id}/assign-site`, {
+              method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({site}),
+            });
+            if (r.ok) { toast(`Assigned to ${site}`); load(); } else toast('Error');
+          });
+        });
+      }
+
+      // Unassigned attendance
+      document.getElementById('ua-count').textContent = d.unassigned_attendance.length;
+      const uaCard = document.getElementById('ua-card');
+      if (!d.unassigned_attendance.length) { uaCard.innerHTML = '<div class="empty">All clear — every attendance event has a site.</div>'; }
+      else {
+        uaCard.innerHTML = `
+          <table>
+            <thead><tr><th>When</th><th class="num">People</th><th>Source SMS</th><th>Note</th><th>Assign to site</th></tr></thead>
+            <tbody>
+              ${d.unassigned_attendance.map(r => `
+                <tr data-id="${r.id}">
+                  <td>${fmtTime(r.recorded_at)}</td>
+                  <td class="num">${r.people_count}</td>
+                  <td style="color:var(--muted)">${r.raw_body ? '"'+r.raw_body+'"' : '<span style="color:var(--hint)">—</span>'}</td>
+                  <td style="color:var(--muted)">${r.note || ''}</td>
+                  <td>
+                    <select class="site-pick">${siteOptions('')}</select>
+                    <button class="primary assign-att">Assign</button>
+                  </td>
+                </tr>`).join('')}
+            </tbody>
+          </table>`;
+        uaCard.querySelectorAll('.assign-att').forEach(btn => {
+          btn.addEventListener('click', async (e) => {
+            const tr = e.currentTarget.closest('tr');
+            const site = tr.querySelector('.site-pick').value;
+            if (!site) { toast('Pick a site'); return; }
+            const r = await fetch(`/api/attendance/${tr.dataset.id}/assign-site`, {
+              method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({site}),
+            });
+            if (r.ok) { toast(`Assigned to ${site}`); load(); } else toast('Error');
+          });
+        });
+      }
+    }
+
+    load();
+  </script>
+</body>
+</html>

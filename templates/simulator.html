@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SMS Simulator · FSFN Inventory</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:#f8f7f4; --surface:#fff; --border:rgba(0,0,0,0.1);
+      --text:#1a1a18; --muted:#6b6b67; --hint:#9a9a96;
+      --green:#1D9E75; --amber:#BA7517; --red:#E24B4A; --blue:#185FA5;
+      --green-bg:#EAF3DE; --amber-bg:#FAEEDA; --red-bg:#FCEBEB; --blue-bg:#E6F1FB;
+      --radius:10px;
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+           background: var(--bg); color: var(--text); font-size: 15px; line-height: 1.5; }
+
+    header { background: var(--surface); border-bottom: 0.5px solid var(--border);
+             padding: 0 1.5rem; height: 52px; display: flex; align-items: center;
+             justify-content: space-between; position: sticky; top: 0; z-index: 10; }
+    header h1 { font-size: 15px; font-weight: 500; }
+    header nav { display: flex; align-items: center; gap: 1rem; }
+    header nav a { font-size: 12px; color: var(--muted); text-decoration: none; }
+    header nav a:hover { color: var(--text); }
+    header nav form button { font-size: 11px; padding: 3px 8px; background: transparent;
+                             color: var(--muted); border: 0.5px solid var(--border); border-radius: 6px;
+                             font-family: inherit; cursor: pointer; }
+
+    main { max-width: 880px; margin: 0 auto; padding: 1.5rem; }
+
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+    @media (max-width: 740px) { .two-col { grid-template-columns: 1fr; } }
+
+    .card { background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--radius); padding: 1.25rem; }
+    h2 { font-size: 15px; font-weight: 500; margin-bottom: 0.5rem; }
+    .sub { color: var(--muted); font-size: 12px; margin-bottom: 1rem; }
+
+    label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase;
+            letter-spacing: 0.05em; margin: 1rem 0 4px; }
+    input, textarea { width: 100%; font-family: inherit; font-size: 14px; padding: 8px 10px;
+                      border: 0.5px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); }
+    textarea { resize: vertical; min-height: 110px; font-family: inherit; }
+    input:focus, textarea:focus { outline: none; border-color: var(--text); }
+
+    button { font-family: inherit; font-size: 13px; padding: 8px 14px; border-radius: 6px;
+             cursor: pointer; border: 0.5px solid var(--border); background: var(--surface); color: var(--text); }
+    button.primary { background: var(--text); color: white; border-color: var(--text); font-weight: 500; }
+    button.primary:hover { background: #000; }
+    button:hover { background: var(--bg); }
+    button:disabled { opacity: 0.5; cursor: progress; }
+
+    .quick { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .quick button { font-size: 11px; padding: 4px 10px; color: var(--muted); }
+
+    pre { background: var(--bg); padding: 10px 12px; border-radius: 6px; font-size: 12px;
+          white-space: pre-wrap; word-break: break-word; max-height: 280px; overflow: auto;
+          font-family: ui-monospace, Menlo, Consolas, monospace; }
+
+    .feed { list-style: none; max-height: 360px; overflow: auto; }
+    .feed li { display: flex; gap: 10px; padding: 8px 0;
+               border-bottom: 0.5px solid var(--border); align-items: flex-start; }
+    .feed li:last-child { border-bottom: none; }
+    .feed-dot { width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
+                display: flex; align-items: center; justify-content: center; font-size: 12px; margin-top: 1px; }
+    .dot-green { background: var(--green-bg); color: var(--green); }
+    .dot-blue  { background: var(--blue-bg);  color: var(--blue);  }
+    .dot-amber { background: var(--amber-bg); color: var(--amber); }
+    .dot-red   { background: var(--red-bg);   color: var(--red);   }
+    .feed-note { font-size: 12px; }
+    .feed-raw  { font-size: 11px; color: var(--muted); font-style: italic; }
+    .feed-meta { font-size: 10px; color: var(--hint); }
+
+    .toast { position: fixed; bottom: 20px; right: 20px; background: var(--text); color: white;
+             padding: 10px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity 0.2s; z-index: 100; }
+    .toast.show { opacity: 0.95; }
+
+    .result-status { font-size: 11px; padding: 2px 8px; border-radius: 4px; display: inline-block; margin-bottom: 8px; }
+    .ok-status   { background: var(--green-bg); color: var(--green); }
+    .err-status  { background: var(--red-bg);   color: var(--red);   }
+
+    .hint { color: var(--hint); font-size: 12px; margin-top: 6px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>FSFN Inventory · SMS Simulator</h1>
+    <nav>
+      <a href="/">Dashboard</a>
+      <a href="/history">History</a>
+      <a href="/admin">Admin</a>
+      <a href="/simulator">Simulator</a>
+      <a href="/reconcile">Reconcile</a>
+      <a href="/import">Import</a>
+      <form method="POST" action="/logout"><button type="submit">Sign out</button></form>
+    </nav>
+  </header>
+
+  <main>
+    <div class="two-col">
+      <div class="card">
+        <h2>Send a fake SMS</h2>
+        <div class="sub">Bypasses Twilio. Runs through the same parser and inventory pipeline as a real text.</div>
+
+        <label for="from">From number</label>
+        <input id="from" value="+15555550100" />
+
+        <label for="body">Message body</label>
+        <textarea id="body" placeholder="e.g. got 3 lemon boxes A grade at downtown"></textarea>
+
+        <div class="quick">
+          <button data-tpl="at downtown got 3 lemon boxes A grade">Restock (downtown)</button>
+          <button data-tpl="east side: 45 lbs apples kinda bruised">Restock w/ weight</button>
+          <button data-tpl="sold $180 today at downtown">Sales</button>
+          <button data-tpl="used 2 bread loaves gave out 5 mixed greens east side">Usage</button>
+          <button data-tpl="served 80 people today at downtown">Attendance</button>
+          <button data-tpl="got 4 dragonfruit boxes at warehouse">Unknown item</button>
+        </div>
+
+        <div style="margin-top:1rem; display:flex; gap:8px;">
+          <button class="primary" id="send-btn">Send</button>
+          <button id="clear-btn">Clear</button>
+        </div>
+        <div class="hint">Hint: Ctrl/Cmd+Enter sends.</div>
+
+        <div id="result" style="margin-top:1.25rem; display:none;">
+          <span class="result-status" id="result-status"></span>
+          <pre id="result-body"></pre>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Recent activity</h2>
+        <div class="sub">Latest events in the database (auto-refreshes after each send).</div>
+        <ul class="feed" id="feed"><li class="feed-meta">Loading…</li></ul>
+      </div>
+    </div>
+  </main>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    function toast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 1800);
+    }
+    function fmtTime(iso) {
+      const d = new Date(iso + (iso.endsWith('Z') ? '' : 'Z'));
+      const diff = Math.round((Date.now() - d) / 1000);
+      if (diff < 60)   return `${diff}s ago`;
+      if (diff < 3600) return `${Math.round(diff/60)}m ago`;
+      if (diff < 86400) return `${Math.round(diff/3600)}h ago`;
+      return d.toLocaleString();
+    }
+
+    const _fetch = window.fetch;
+    window.fetch = async (...args) => {
+      const r = await _fetch(...args);
+      if (r.status === 401) {
+        location.href = '/login?next=' + encodeURIComponent(location.pathname);
+        throw new Error('redirecting to login');
+      }
+      return r;
+    };
+
+    async function loadFeed() {
+      const items = await fetch('/api/feed?limit=15').then(r => r.json());
+      const ul = document.getElementById('feed');
+      if (!items.length) { ul.innerHTML = '<li class="feed-meta">No events yet.</li>'; return; }
+      ul.innerHTML = items.map(ev => {
+        const p = ev.parsed;
+        const note = p?.note || (ev.parse_error ? 'Parse error' : ev.raw_body);
+        let icon = '📦', dotClass = 'dot-green';
+        if (p?.sale_usd) { icon = '$'; dotClass = 'dot-blue'; }
+        else if (ev.parse_error) { icon = '!'; dotClass = 'dot-red'; }
+        else if (!p?.changes?.length) { icon = '?'; dotClass = 'dot-amber'; }
+        const siteTag = p?.site ? ` · ${p.site}` : '';
+        return `
+          <li>
+            <div class="feed-dot ${dotClass}">${icon}</div>
+            <div>
+              <div class="feed-note">${note}</div>
+              <div class="feed-raw">"${ev.raw_body}"</div>
+              <div class="feed-meta">${fmtTime(ev.received_at)} · ${ev.from_number}${siteTag}</div>
+            </div>
+          </li>`;
+      }).join('');
+    }
+
+    async function send() {
+      const from = document.getElementById('from').value.trim();
+      const body = document.getElementById('body').value.trim();
+      if (!body) { toast('Enter a message body'); return; }
+      const btn = document.getElementById('send-btn');
+      btn.disabled = true; btn.textContent = 'Sending…';
+
+      const result = document.getElementById('result');
+      const status = document.getElementById('result-status');
+      const bodyEl = document.getElementById('result-body');
+
+      try {
+        const r = await fetch('/api/simulate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ from, body }),
+        });
+        const j = await r.json();
+        const ok = r.ok && !j.parse_error;
+        status.textContent = ok ? `Event #${j.event_id} parsed OK` : (j.parse_error || 'Error');
+        status.className = 'result-status ' + (ok ? 'ok-status' : 'err-status');
+        bodyEl.textContent = JSON.stringify(j.parsed ?? j, null, 2);
+        result.style.display = 'block';
+        if (ok) toast('Sent');
+        await loadFeed();
+      } catch (e) {
+        toast('Error: ' + e.message);
+      } finally {
+        btn.disabled = false; btn.textContent = 'Send';
+      }
+    }
+
+    document.getElementById('send-btn').addEventListener('click', send);
+    document.getElementById('clear-btn').addEventListener('click', () => {
+      document.getElementById('body').value = '';
+      document.getElementById('result').style.display = 'none';
+      document.getElementById('body').focus();
+    });
+    document.getElementById('body').addEventListener('keydown', e => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') send();
+    });
+    document.querySelectorAll('.quick button').forEach(b => {
+      b.addEventListener('click', () => {
+        document.getElementById('body').value = b.dataset.tpl;
+        document.getElementById('body').focus();
+      });
+    });
+
+    loadFeed();
+    setInterval(loadFeed, 15_000);
+  </script>
+</body>
+</html>

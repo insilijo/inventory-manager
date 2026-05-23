@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>History · FSFN Inventory</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:#f8f7f4; --surface:#fff; --border:rgba(0,0,0,0.1);
+      --text:#1a1a18; --muted:#6b6b67; --hint:#9a9a96;
+      --green:#1D9E75; --amber:#BA7517; --red:#E24B4A; --blue:#185FA5;
+      --green-bg:#EAF3DE; --amber-bg:#FAEEDA; --red-bg:#FCEBEB; --blue-bg:#E6F1FB;
+      --radius:10px;
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+           background: var(--bg); color: var(--text); font-size: 15px; line-height: 1.5; }
+
+    header { background: var(--surface); border-bottom: 0.5px solid var(--border);
+             padding: 0 1.5rem; height: 52px; display: flex; align-items: center;
+             justify-content: space-between; position: sticky; top: 0; z-index: 10; }
+    header h1 { font-size: 15px; font-weight: 500; }
+    header nav a { font-size: 12px; color: var(--muted); margin-left: 1rem; text-decoration: none; }
+    header nav a:hover { color: var(--text); }
+
+    main { max-width: 900px; margin: 0 auto; padding: 1.5rem; }
+    h2 { font-size: 18px; font-weight: 500; margin-bottom: 0.5rem; }
+    .sub { color: var(--muted); font-size: 12px; margin-bottom: 1rem; }
+
+    .controls { display: flex; gap: 8px; align-items: center; margin-bottom: 1rem; }
+    .controls input { font-family: inherit; font-size: 13px; padding: 6px 9px;
+                      border: 0.5px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); min-width: 220px; }
+    .toggle-group { display: inline-flex; background: var(--surface); border: 0.5px solid var(--border); border-radius: 6px; padding: 2px; }
+    .toggle-btn { font-size: 11px; padding: 5px 12px; border: none; background: transparent;
+                  color: var(--muted); cursor: pointer; border-radius: 4px; font-family: inherit; }
+    .toggle-btn.active { background: var(--bg); color: var(--text); }
+
+    .feed { list-style: none; }
+    .feed li { display: flex; gap: 10px; padding: 12px 0;
+               border-bottom: 0.5px solid var(--border); align-items: flex-start; }
+    .feed li:last-child { border-bottom: none; }
+    .feed-dot { width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0;
+                display: flex; align-items: center; justify-content: center;
+                font-size: 13px; margin-top: 1px; }
+    .dot-green { background: var(--green-bg); color: var(--green); }
+    .dot-blue  { background: var(--blue-bg);  color: var(--blue);  }
+    .dot-amber { background: var(--amber-bg); color: var(--amber); }
+    .dot-red   { background: var(--red-bg);   color: var(--red);   }
+    .feed-note { font-size: 13px; color: var(--text); margin-bottom: 2px; }
+    .feed-raw  { font-size: 11px; color: var(--muted); font-style: italic; margin-bottom: 1px; }
+    .feed-meta { font-size: 11px; color: var(--hint); }
+
+    .empty { color: var(--hint); font-size: 13px; padding: 1rem 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>FSFN Inventory · History</h1>
+    <nav>
+      <a href="/">Dashboard</a>
+      <a href="/history">History</a>
+      <a href="/admin">Admin</a>
+      <a href="/simulator">Simulator</a>
+      <a href="/reconcile">Reconcile</a>
+      <a href="/import">Import</a>
+    </nav>
+  </header>
+
+  <main>
+    <h2>SMS history</h2>
+    <div class="sub">Every text the system has received, newest first. Parse errors show in red.</div>
+
+    <div class="controls">
+      <input id="search" type="search" placeholder="Filter by raw text or phone number…" />
+      <div class="toggle-group" id="filter">
+        <button class="toggle-btn active" data-filter="all">All</button>
+        <button class="toggle-btn" data-filter="sales">Sales</button>
+        <button class="toggle-btn" data-filter="restock">Restock</button>
+        <button class="toggle-btn" data-filter="error">Errors</button>
+      </div>
+      <div class="toggle-group" id="limit">
+        <button class="toggle-btn"        data-limit="50">50</button>
+        <button class="toggle-btn active" data-limit="100">100</button>
+        <button class="toggle-btn"        data-limit="500">500</button>
+      </div>
+    </div>
+
+    <ul class="feed" id="feed"><li class="empty">Loading…</li></ul>
+  </main>
+
+  <script>
+    const state = { filter: 'all', limit: 100, search: '' };
+    let cache = [];
+
+    function fmtTime(iso) {
+      const d = new Date(iso + (iso.endsWith('Z') ? '' : 'Z'));
+      const diff = Math.round((Date.now() - d) / 1000);
+      if (diff < 60)    return `${diff}s ago`;
+      if (diff < 3600)  return `${Math.round(diff/60)}m ago`;
+      if (diff < 86400) return `${Math.round(diff/3600)}h ago`;
+      return d.toLocaleString();
+    }
+
+    function classifyEvent(ev) {
+      const p = ev.parsed;
+      if (ev.parse_error) return 'error';
+      if (p?.sale_usd)    return 'sales';
+      if (p?.changes?.some(c => (c.delta || 0) > 0)) return 'restock';
+      return 'other';
+    }
+
+    function render() {
+      const ul = document.getElementById('feed');
+      const filtered = cache.filter(ev => {
+        if (state.filter !== 'all' && classifyEvent(ev) !== state.filter) return false;
+        if (state.search) {
+          const s = state.search.toLowerCase();
+          if (!(ev.raw_body || '').toLowerCase().includes(s) &&
+              !(ev.from_number || '').toLowerCase().includes(s)) return false;
+        }
+        return true;
+      });
+      if (!filtered.length) { ul.innerHTML = '<li class="empty">No matching events.</li>'; return; }
+      ul.innerHTML = filtered.map(ev => {
+        const p = ev.parsed;
+        const note = p?.note || (ev.parse_error ? 'Parse error: ' + ev.parse_error : ev.raw_body);
+        let icon = '📦', dotClass = 'dot-green';
+        if (p?.sale_usd) { icon = '$'; dotClass = 'dot-blue'; }
+        else if (ev.parse_error) { icon = '!'; dotClass = 'dot-red'; }
+        else if (!p?.changes?.length && !p?.people_count) { icon = '?'; dotClass = 'dot-amber'; }
+        else if (p?.people_count) { icon = '👤'; dotClass = 'dot-blue'; }
+        const siteTag = p?.site ? ` · ${p.site}` : '';
+        return `
+          <li>
+            <div class="feed-dot ${dotClass}">${icon}</div>
+            <div style="flex:1;">
+              <div class="feed-note">${note}</div>
+              <div class="feed-raw">"${ev.raw_body}"</div>
+              <div class="feed-meta">${fmtTime(ev.received_at)} · ${ev.from_number}${siteTag}</div>
+            </div>
+          </li>`;
+      }).join('');
+    }
+
+    async function load() {
+      cache = await fetch(`/api/feed?limit=${state.limit}`).then(r => r.json());
+      render();
+    }
+
+    document.getElementById('filter').addEventListener('click', e => {
+      const btn = e.target.closest('button[data-filter]');
+      if (!btn) return;
+      [...document.querySelectorAll('#filter .toggle-btn')].forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.filter = btn.dataset.filter;
+      render();
+    });
+    document.getElementById('limit').addEventListener('click', e => {
+      const btn = e.target.closest('button[data-limit]');
+      if (!btn) return;
+      [...document.querySelectorAll('#limit .toggle-btn')].forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.limit = +btn.dataset.limit;
+      load();
+    });
+    document.getElementById('search').addEventListener('input', e => {
+      state.search = e.target.value;
+      render();
+    });
+
+    load();
+    setInterval(load, 30_000);
+  </script>
+</body>
+</html>

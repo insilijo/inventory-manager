@@ -1,3 +1,5 @@
+import csv
+import io
 import os
 import json
 import secrets
@@ -7,9 +9,12 @@ from datetime import datetime
 from contextlib import contextmanager
 from typing import Optional
 
+from dotenv import load_dotenv
+load_dotenv()  # loads ./.env into the process env if present
+
 import anthropic
-from fastapi import FastAPI, Request, Form, HTTPException, Depends
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import FastAPI, Request, Form, HTTPException, Depends, UploadFile, File
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from twilio.request_validator import RequestValidator
@@ -33,10 +38,10 @@ SESSION_SECRET = os.getenv("SESSION_SECRET", "")
 # the credential env vars missing. Set VALIDATE_TWILIO=false for local dev.
 
 if VALIDATE_TWILIO:
+    # TWILIO_AUTH_TOKEN is optional — if absent, /sms returns 503 until configured.
+    # ADMIN_PASSWORD is optional — if absent, admin endpoints are open (prototype mode).
     missing = [k for k, v in [
-        ("TWILIO_AUTH_TOKEN", TWILIO_AUTH_TOKEN),
         ("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY),
-        ("ADMIN_PASSWORD",    ADMIN_PASSWORD),
         ("SESSION_SECRET",    SESSION_SECRET),
     ] if not v]
     if missing:
@@ -64,9 +69,10 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # ---------------------------------------------------------------------------
 
 def require_admin(request: Request) -> str:
-    """API-side admin check — returns 401 JSON when not logged in."""
+    """API-side admin check — returns 401 JSON when not logged in.
+    When ADMIN_PASSWORD is empty, auth is disabled (prototype mode)."""
     if not ADMIN_PASSWORD:
-        raise HTTPException(status_code=503, detail="Admin auth not configured")
+        return "open"
     user = request.session.get("user")
     if user != ADMIN_USER:
         raise HTTPException(status_code=401, detail="not authenticated")
@@ -74,7 +80,9 @@ def require_admin(request: Request) -> str:
 
 
 def is_logged_in(request: Request) -> bool:
-    return bool(ADMIN_PASSWORD) and request.session.get("user") == ADMIN_USER
+    if not ADMIN_PASSWORD:
+        return True  # auth disabled in prototype mode
+    return request.session.get("user") == ADMIN_USER
 
 # ---------------------------------------------------------------------------
 # Database
@@ -166,6 +174,32 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_batches_item ON inventory_batches(item);
             CREATE INDEX IF NOT EXISTS idx_batches_received_at ON inventory_batches(received_at);
             CREATE INDEX IF NOT EXISTS idx_sales_recorded_at ON sales_log(recorded_at);
+
+            CREATE TABLE IF NOT EXISTS attendance_log (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                recorded_at  TEXT    NOT NULL,
+                site_id      INTEGER REFERENCES sites(id),
+                people_count INTEGER NOT NULL,
+                note         TEXT,
+                sms_event_id INTEGER REFERENCES sms_events(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_attendance_recorded_at ON attendance_log(recorded_at);
+
+            CREATE TABLE IF NOT EXISTS inventory_adjustments (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                recorded_at     TEXT    NOT NULL,
+                item            TEXT    NOT NULL,
+                kind            TEXT    NOT NULL CHECK (kind IN ('correction', 'waste', 'sold')),
+                delta_quantity  INTEGER NOT NULL DEFAULT 0,
+                delta_weight_lbs REAL,
+                amount_usd      REAL,
+                recipient       TEXT,
+                note            TEXT,
+                site_id         INTEGER REFERENCES sites(id),
+                sales_log_id    INTEGER REFERENCES sales_log(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_adj_item ON inventory_adjustments(item);
+            CREATE INDEX IF NOT EXISTS idx_adj_recorded_at ON inventory_adjustments(recorded_at);
         """)
 
         # Idempotent migrations for older DBs
@@ -326,6 +360,7 @@ Messages may report:
   - sales/revenue (e.g. "sold $150", "sales 200")
   - inventory restocks (e.g. "3 lemon boxes", "got 4 apple boxes in")
   - inventory removals or usage (e.g. "used 2 bread loaves", "gave out 5 bags")
+  - foot traffic / attendance (e.g. "served 80 people today", "45 visitors", "30 families came through")
 
 Each message comes from one site. The volunteer may say the site at the start
 ("at downtown: 3 lemon boxes"), at the end ("3 lemon boxes — eastside"), or
@@ -358,6 +393,7 @@ Return ONLY valid JSON, no other text, matching this schema:
 {{
   "site": "<canonical site name from registry, or null>",
   "sale_usd": <number or null>,
+  "people_count": <integer or null — number of people / visitors / families served>,
   "changes": [
     {{
       "item": "<canonical name from registry, or raw text if unrecognized>",
@@ -371,14 +407,40 @@ Return ONLY valid JSON, no other text, matching this schema:
   "note": "<brief human-readable summary>"
 }}
 
-If a message is completely unrelated to inventory/sales, return:
-{{"site": null, "sale_usd": null, "changes": [], "note": "unrecognized message"}}
+If a message is completely unrelated to inventory/sales/attendance, return:
+{{"site": null, "sale_usd": null, "people_count": null, "changes": [], "note": "unrecognized message"}}
 """
 
 
 # ---------------------------------------------------------------------------
 # SMS parsing via Claude
 # ---------------------------------------------------------------------------
+
+def _extract_text(msg) -> str:
+    """Grab the first text block from a messages-API response, even if other
+    block types come first (e.g. thinking blocks)."""
+    for block in msg.content:
+        if getattr(block, "type", None) == "text" or hasattr(block, "text"):
+            return block.text or ""
+    return ""
+
+
+def _extract_json(text: str) -> str:
+    """Tolerantly extract a JSON object from Claude's text output.
+    Strips markdown code fences and trims any preamble before the first {."""
+    text = text.strip()
+    if text.startswith("```"):
+        # Drop the opening fence line and the closing fence
+        lines = text.split("\n")
+        if lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines[1:]).strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        return text[start:end + 1]
+    return text
+
 
 def parse_sms(body: str) -> dict:
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -388,8 +450,14 @@ def parse_sms(body: str) -> dict:
         system=build_parse_system(),
         messages=[{"role": "user", "content": body}],
     )
-    text = msg.content[0].text.strip()
-    return json.loads(text)
+    raw = _extract_text(msg)
+    extracted = _extract_json(raw)
+    try:
+        return json.loads(extracted)
+    except json.JSONDecodeError as e:
+        log.error("Claude returned non-JSON. Raw response: %r", raw)
+        snippet = raw[:300] if raw else "<empty response>"
+        raise ValueError(f"Claude returned invalid JSON ({e}). Raw: {snippet}")
 
 
 # ---------------------------------------------------------------------------
@@ -415,6 +483,17 @@ def apply_update(conn: sqlite3.Connection, parsed: dict, event_id: int):
             "INSERT INTO sales_log (recorded_at, amount_usd, note, sms_event_id, site_id) VALUES (?, ?, ?, ?, ?)",
             (now, parsed["sale_usd"], note, event_id, site_id),
         )
+
+    if parsed.get("people_count"):
+        try:
+            count = int(parsed["people_count"])
+        except (TypeError, ValueError):
+            count = 0
+        if count > 0:
+            conn.execute(
+                "INSERT INTO attendance_log (recorded_at, site_id, people_count, note, sms_event_id) VALUES (?, ?, ?, ?, ?)",
+                (now, site_id, count, note, event_id),
+            )
 
     for change in parsed.get("changes", []):
         item = change["item"].lower().strip()
@@ -443,17 +522,20 @@ def apply_update(conn: sqlite3.Connection, parsed: dict, event_id: int):
                 (item, site_id, delta, unit, est_weight, quality, now, event_id, note),
             )
 
-        # Always update the rollup table
+        # Always update the rollup table.
+        # NOTE: delta is passed twice — the VALUES clause clamps to 0 for new rows
+        # (no negative initial qty), but the ON CONFLICT clause uses the raw delta
+        # so removals (delta<0) actually decrement an existing row.
         conn.execute(
             """
             INSERT INTO inventory (item, quantity, unit, updated_at)
             VALUES (?, MAX(0, ?), ?, ?)
             ON CONFLICT(item) DO UPDATE SET
-                quantity   = MAX(0, inventory.quantity + excluded.quantity),
+                quantity   = MAX(0, inventory.quantity + ?),
                 unit       = excluded.unit,
                 updated_at = excluded.updated_at
             """,
-            (item, delta, unit, now),
+            (item, delta, unit, now, delta),
         )
 
 
@@ -461,28 +543,13 @@ def apply_update(conn: sqlite3.Connection, parsed: dict, event_id: int):
 # Twilio webhook
 # ---------------------------------------------------------------------------
 
-@app.post("/sms")
-async def receive_sms(
-    request: Request,
-    From: str = Form(...),
-    Body: str = Form(...),
-):
-    if VALIDATE_TWILIO and TWILIO_AUTH_TOKEN:
-        validator = RequestValidator(TWILIO_AUTH_TOKEN)
-        url = str(request.url)
-        form_data = dict(await request.form())
-        sig = request.headers.get("X-Twilio-Signature", "")
-        if not validator.validate(url, form_data, sig):
-            raise HTTPException(status_code=403, detail="Invalid Twilio signature")
-
+def _ingest_sms(from_number: str, body: str) -> dict:
+    """Shared parse + persist + apply pipeline. Returns the inserted event id and parsed payload."""
     now = datetime.utcnow().isoformat()
-    log.info("SMS from %s: %s", From, Body)
-
     parsed = None
     parse_error = None
-
     try:
-        parsed = parse_sms(Body)
+        parsed = parse_sms(body)
     except Exception as exc:
         parse_error = str(exc)
         log.error("Parse error: %s", exc)
@@ -490,7 +557,7 @@ async def receive_sms(
     with get_db() as conn:
         cur = conn.execute(
             "INSERT INTO sms_events (received_at, from_number, raw_body, parsed_json, parse_error) VALUES (?, ?, ?, ?, ?)",
-            (now, From, Body, json.dumps(parsed) if parsed else None, parse_error),
+            (now, from_number, body, json.dumps(parsed) if parsed else None, parse_error),
         )
         event_id = cur.lastrowid
 
@@ -499,7 +566,41 @@ async def receive_sms(
                 apply_update(conn, parsed, event_id)
             except Exception as exc:
                 log.error("DB update error: %s", exc)
+                parse_error = parse_error or f"apply_update: {exc}"
 
+    return {"event_id": event_id, "parsed": parsed, "parse_error": parse_error}
+
+
+@app.post("/api/simulate", dependencies=[Depends(require_admin)])
+def api_simulate(payload: dict):
+    """Admin-only: send a fake SMS through the parse+apply pipeline, bypassing Twilio."""
+    from_number = (payload.get("from") or "+15555550100").strip()
+    body = (payload.get("body") or "").strip()
+    if not body:
+        raise HTTPException(400, "body required")
+    return _ingest_sms(from_number, body)
+
+
+@app.post("/sms")
+async def receive_sms(
+    request: Request,
+    From: str = Form(...),
+    Body: str = Form(...),
+):
+    if VALIDATE_TWILIO:
+        # In prod we either validate the Twilio signature or refuse the request.
+        # An open /sms endpoint would let anyone trigger Anthropic calls + DB writes.
+        if not TWILIO_AUTH_TOKEN:
+            raise HTTPException(status_code=503, detail="Twilio not configured")
+        validator = RequestValidator(TWILIO_AUTH_TOKEN)
+        url = str(request.url)
+        form_data = dict(await request.form())
+        sig = request.headers.get("X-Twilio-Signature", "")
+        if not validator.validate(url, form_data, sig):
+            raise HTTPException(status_code=403, detail="Invalid Twilio signature")
+
+    log.info("SMS from %s: %s", From, Body)
+    _ingest_sms(From, Body)
     return HTMLResponse(
         content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
         media_type="application/xml",
@@ -602,6 +703,42 @@ def api_cashflow(bucket: str = "day", since_days: int = 30, site: Optional[str] 
     return [dict(r) for r in rows]
 
 
+@app.get("/api/attendance")
+def api_attendance(bucket: str = "week", since_days: int = 90, site: Optional[str] = None):
+    """
+    Foot traffic aggregated by time bucket, optionally segmented by site.
+    bucket: 'day' | 'week' | 'month'
+    """
+    fmt = {
+        "day":   "%Y-%m-%d",
+        "week":  "%Y-W%W",
+        "month": "%Y-%m",
+    }.get(bucket, "%Y-W%W")
+
+    params = [fmt, f"-{int(since_days)} days"]
+    where = ["recorded_at >= datetime('now', ?)"]
+    if site:
+        where.append("s.canonical = ?")
+        params.append(site)
+    where_sql = " AND ".join(where)
+
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT strftime(?, recorded_at) AS bucket,
+                   COALESCE(s.canonical, 'unassigned') AS site,
+                   SUM(a.people_count) AS total
+            FROM attendance_log a
+            LEFT JOIN sites s ON s.id = a.site_id
+            WHERE {where_sql}
+            GROUP BY bucket, site
+            ORDER BY bucket ASC
+            """,
+            params,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 @app.get("/api/totals")
 def api_totals(metric: str = "quantity", segment: str = "item"):
     """
@@ -679,6 +816,25 @@ def api_item_history(
             ORDER BY bucket ASC
             """,
             (fmt, canonical, f"-{int(since_days)} days"),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/item/{canonical:path}/adjustments")
+def api_item_adjustments(canonical: str):
+    canonical = canonical.lower().strip()
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT a.id, a.recorded_at, a.kind, a.delta_quantity, a.delta_weight_lbs,
+                   a.amount_usd, a.recipient, a.note,
+                   COALESCE(s.canonical, 'unassigned') AS site
+            FROM inventory_adjustments a
+            LEFT JOIN sites s ON s.id = a.site_id
+            WHERE a.item = ?
+            ORDER BY a.recorded_at DESC
+            """,
+            (canonical,),
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -871,18 +1027,25 @@ def api_resolve_unknown(unknown_id: int, payload: dict):
 
     with get_db() as conn:
         row = conn.execute(
-            "SELECT raw_name FROM unknown_items WHERE id=?", (unknown_id,)
+            "SELECT raw_name, sms_event_id, resolved_to FROM unknown_items WHERE id=?",
+            (unknown_id,),
         ).fetchone()
         if not row:
             raise HTTPException(404, "unknown item not found")
+        if row["resolved_to"]:
+            raise HTTPException(400, f"already resolved to '{row['resolved_to']}'")
         raw_name = row["raw_name"]
+        event_id = row["sms_event_id"]
 
         if action == "add":
             unit = payload.get("unit", "units")
             weight_per_unit = payload.get("weight_per_unit")
+            degrade_per_day = payload.get("degrade_per_day") or 0
             conn.execute(
-                "INSERT OR IGNORE INTO item_registry (canonical, unit, aliases, weight_per_unit) VALUES (?, ?, ?, ?)",
-                (canonical, unit, json.dumps([raw_name]), weight_per_unit),
+                """INSERT OR IGNORE INTO item_registry
+                   (canonical, unit, aliases, weight_per_unit, degrade_per_day)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (canonical, unit, json.dumps([raw_name]), weight_per_unit, degrade_per_day),
             )
         elif action == "map":
             alias_row = conn.execute(
@@ -900,11 +1063,667 @@ def api_resolve_unknown(unknown_id: int, payload: dict):
         else:
             raise HTTPException(400, "action must be 'map' or 'add'")
 
+        # Replay the deferred inventory change from the originating SMS
+        replayed = []
+        if event_id is not None:
+            evt = conn.execute(
+                "SELECT parsed_json FROM sms_events WHERE id=?", (event_id,)
+            ).fetchone()
+            if evt and evt["parsed_json"]:
+                parsed = json.loads(evt["parsed_json"])
+                recovered = [
+                    {**ch, "item": canonical, "unrecognized": False}
+                    for ch in parsed.get("changes", [])
+                    if ch.get("unrecognized") and (ch.get("item") or "").lower().strip() == raw_name
+                ]
+                if recovered:
+                    apply_update(
+                        conn,
+                        {**parsed, "changes": recovered},
+                        event_id,
+                    )
+                    replayed = recovered
+
         conn.execute(
             "UPDATE unknown_items SET resolved_to=? WHERE id=?", (canonical, unknown_id)
         )
 
-    return {"ok": True, "raw_name": raw_name, "resolved_to": canonical}
+    return {"ok": True, "raw_name": raw_name, "resolved_to": canonical, "replayed": replayed}
+
+
+# ---------------------------------------------------------------------------
+# Reconciliation
+# ---------------------------------------------------------------------------
+
+@app.get("/api/reconcile/summary")
+def api_reconcile_summary():
+    """Per-site rollups of sales + attendance, plus counts of unassigned rows."""
+    with get_db() as conn:
+        sales_per_site = conn.execute(
+            """
+            SELECT COALESCE(s.canonical, 'unassigned') AS site,
+                   COUNT(*) AS count,
+                   COALESCE(SUM(amount_usd), 0) AS total_usd
+            FROM sales_log l
+            LEFT JOIN sites s ON s.id = l.site_id
+            GROUP BY site
+            ORDER BY site
+            """
+        ).fetchall()
+        attendance_per_site = conn.execute(
+            """
+            SELECT COALESCE(s.canonical, 'unassigned') AS site,
+                   COUNT(*) AS count,
+                   COALESCE(SUM(people_count), 0) AS total_people
+            FROM attendance_log a
+            LEFT JOIN sites s ON s.id = a.site_id
+            GROUP BY site
+            ORDER BY site
+            """
+        ).fetchall()
+        unassigned_sales = conn.execute(
+            """
+            SELECT l.id, l.recorded_at, l.amount_usd, l.note,
+                   e.raw_body
+            FROM sales_log l
+            LEFT JOIN sms_events e ON e.id = l.sms_event_id
+            WHERE l.site_id IS NULL
+            ORDER BY l.recorded_at DESC
+            """
+        ).fetchall()
+        unassigned_attendance = conn.execute(
+            """
+            SELECT a.id, a.recorded_at, a.people_count, a.note,
+                   e.raw_body
+            FROM attendance_log a
+            LEFT JOIN sms_events e ON e.id = a.sms_event_id
+            WHERE a.site_id IS NULL
+            ORDER BY a.recorded_at DESC
+            """
+        ).fetchall()
+
+    return {
+        "sales_per_site":      [dict(r) for r in sales_per_site],
+        "attendance_per_site": [dict(r) for r in attendance_per_site],
+        "unassigned_sales":      [dict(r) for r in unassigned_sales],
+        "unassigned_attendance": [dict(r) for r in unassigned_attendance],
+    }
+
+
+@app.post("/api/sales/{sale_id}/assign-site", dependencies=[Depends(require_admin)])
+def api_assign_sale_site(sale_id: int, payload: dict):
+    site_name = (payload.get("site") or "").strip()
+    site_id = resolve_site(site_name)
+    if site_name and not site_id:
+        raise HTTPException(400, f"site '{site_name}' not in registry")
+    with get_db() as conn:
+        r = conn.execute("UPDATE sales_log SET site_id=? WHERE id=?", (site_id, sale_id))
+        if r.rowcount == 0:
+            raise HTTPException(404, "sale not found")
+    return {"ok": True, "sale_id": sale_id, "site": site_name or None}
+
+
+@app.post("/api/attendance/{att_id}/assign-site", dependencies=[Depends(require_admin)])
+def api_assign_attendance_site(att_id: int, payload: dict):
+    site_name = (payload.get("site") or "").strip()
+    site_id = resolve_site(site_name)
+    if site_name and not site_id:
+        raise HTTPException(400, f"site '{site_name}' not in registry")
+    with get_db() as conn:
+        r = conn.execute("UPDATE attendance_log SET site_id=? WHERE id=?", (site_id, att_id))
+        if r.rowcount == 0:
+            raise HTTPException(404, "attendance not found")
+    return {"ok": True, "attendance_id": att_id, "site": site_name or None}
+
+
+# ---------------------------------------------------------------------------
+# Per-item adjustments (correction / waste / sold)
+# ---------------------------------------------------------------------------
+
+VALID_ADJ_KINDS = {"correction", "waste", "sold"}
+
+
+@app.post("/api/item/{canonical:path}/adjust", dependencies=[Depends(require_admin)])
+def api_item_adjust(canonical: str, payload: dict):
+    """
+    Apply an adjustment to an item's inventory and log it for audit.
+    Body: {kind, delta_quantity, delta_weight_lbs?, amount_usd?, recipient?, note?, site?}
+    Kinds: 'correction' (delta can be +/-), 'waste' (delta forced negative),
+           'sold' (delta forced negative; if amount_usd>0, also writes a sales_log row).
+    """
+    canonical = canonical.lower().strip()
+    kind = (payload.get("kind") or "").strip().lower()
+    if kind not in VALID_ADJ_KINDS:
+        raise HTTPException(400, f"kind must be one of {sorted(VALID_ADJ_KINDS)}")
+
+    try:
+        delta_q = int(payload.get("delta_quantity") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "delta_quantity must be an integer")
+
+    delta_w = payload.get("delta_weight_lbs")
+    if delta_w in ("", None):
+        delta_w = None
+    else:
+        try:
+            delta_w = float(delta_w)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "delta_weight_lbs must be numeric")
+
+    amount = payload.get("amount_usd")
+    if amount in ("", None):
+        amount = None
+    else:
+        try:
+            amount = float(amount)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "amount_usd must be numeric")
+
+    recipient = (payload.get("recipient") or "").strip() or None
+    note      = (payload.get("note") or "").strip() or None
+    site_name = (payload.get("site") or "").strip() or None
+    site_id   = resolve_site(site_name) if site_name else None
+
+    # Force sign by kind so the UI can't accidentally invert a "waste" or "sold"
+    if kind in ("waste", "sold") and delta_q > 0:
+        delta_q = -delta_q
+    if kind in ("waste", "sold") and delta_w is not None and delta_w > 0:
+        delta_w = -delta_w
+
+    if delta_q == 0 and not (kind == "sold" and amount):
+        raise HTTPException(400, "delta_quantity required (or for 'sold', an amount_usd)")
+
+    now = datetime.utcnow().isoformat()
+    with get_db() as conn:
+        sales_id = None
+        if kind == "sold" and amount and amount > 0:
+            cur = conn.execute(
+                "INSERT INTO sales_log (recorded_at, amount_usd, note, site_id) VALUES (?, ?, ?, ?)",
+                (now, amount, f"sold {canonical}" + (f" to {recipient}" if recipient else ""), site_id),
+            )
+            sales_id = cur.lastrowid
+
+        cur = conn.execute(
+            """INSERT INTO inventory_adjustments
+                 (recorded_at, item, kind, delta_quantity, delta_weight_lbs, amount_usd, recipient, note, site_id, sales_log_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (now, canonical, kind, delta_q, delta_w, amount, recipient, note, site_id, sales_id),
+        )
+        adj_id = cur.lastrowid
+
+        if delta_q != 0:
+            conn.execute(
+                """
+                INSERT INTO inventory (item, quantity, unit, updated_at)
+                VALUES (?, MAX(0, ?), 'units', ?)
+                ON CONFLICT(item) DO UPDATE SET
+                    quantity   = MAX(0, inventory.quantity + ?),
+                    updated_at = excluded.updated_at
+                """,
+                (canonical, delta_q, now, delta_q),
+            )
+
+    return {"ok": True, "id": adj_id, "kind": kind, "delta_quantity": delta_q, "sales_log_id": sales_id}
+
+
+# ---------------------------------------------------------------------------
+# Spreadsheet import (Haymarket-style weekly worksheet)
+# ---------------------------------------------------------------------------
+import re
+
+
+def _parse_qty(raw) -> tuple[Optional[int], str]:
+    """'3 boxes' -> (3, 'boxes'); 60 -> (60, 'units'); None -> (None, 'units')."""
+    if raw is None:
+        return None, "units"
+    if isinstance(raw, (int, float)):
+        return int(raw), "units"
+    s = str(raw).strip()
+    m = re.match(r"\s*(\d+(?:\.\d+)?)\s*(.*)$", s)
+    if not m:
+        return None, "units"
+    qty = int(float(m.group(1)))
+    unit = (m.group(2).strip() or "units").lower()
+    return qty, unit
+
+
+def _extract_money(text: str) -> Optional[float]:
+    """Find a dollar amount in a free-text cell. Returns float or None.
+    Filters out per-unit rates like '.77/lb'."""
+    if not isinstance(text, str):
+        return None
+    if re.search(r"/\s*(lb|lbs|oz|kg|pound|each|count)\b", text, re.I):
+        return None
+    m = re.search(r"\$?\s*(\d+(?:\.\d+)?)", text)
+    if m:
+        return float(m.group(1))
+    return None
+
+
+def parse_haymarket_xlsx(file_bytes: bytes) -> dict:
+    """Parse a Haymarket-style weekly worksheet into a preview structure."""
+    from openpyxl import load_workbook
+    wb = load_workbook(io.BytesIO(file_bytes), data_only=True)
+    ws = wb[wb.sheetnames[0]]
+    rows = list(ws.iter_rows(values_only=True))
+    if len(rows) < 2:
+        raise ValueError("worksheet has fewer than 2 rows")
+
+    # --- Date ---
+    date_iso = None
+    for cell in rows[0]:
+        if isinstance(cell, str) and "DATE" in cell.upper():
+            m = re.search(r"(\d{1,2})[/\-](\d{1,2})[/\-](\d{2,4})", cell)
+            if m:
+                mo, dy, yr = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                if yr < 100:
+                    yr += 2000
+                date_iso = f"{yr:04d}-{mo:02d}-{dy:02d}"
+                break
+
+    # --- Detect sections by walking row 1 ---
+    # Section 0 is always col 0 (the implicit source like "Haymarket").
+    # Subsequent sections start at columns where row1 says "for distribution".
+    row0 = list(rows[0]) + [None] * 8
+    row1 = list(rows[1]) + [None] * 8
+    DISTRIB_HEADERS = {"for distribution", "for distribiution", "distribution"}
+    SKIP_NAMES = {"total", "compost", "free", "goal", ""}
+
+    sections = []
+    # Section 0 — acquisition source
+    src_label = row1[0].strip() if isinstance(row1[0], str) and row1[0].strip() else "Source"
+    sections.append({"label": src_label, "start_col": 0})
+    for col in range(1, len(row1)):
+        sub = row1[col]
+        if isinstance(sub, str) and sub.strip().lower() in DISTRIB_HEADERS:
+            label = row0[col].strip() if isinstance(row0[col], str) and row0[col].strip() else f"col_{col}"
+            sections.append({"label": label, "start_col": col})
+    for i, sec in enumerate(sections):
+        end = sections[i + 1]["start_col"] if i + 1 < len(sections) else len(row0)
+        sec["width"] = end - sec["start_col"]
+
+    # --- Walk rows in each section ---
+    out_sections = []
+    for sec in sections:
+        sc = sec["start_col"]
+        width = sec["width"]
+        is_distribution = sc != 0  # col 0 is always source; others are "for distribution"
+        items = []
+        raw_text = []
+        for r_idx in range(2, len(rows)):
+            cells = list(rows[r_idx][sc:sc + width])
+            if not any(cells):
+                continue
+            item_name = cells[0] if len(cells) > 0 else None
+            qty_raw = cells[1] if len(cells) > 1 else None
+            lbs = cells[2] if len(cells) > 2 else None
+            name_ok = isinstance(item_name, str) and item_name.strip().lower() not in SKIP_NAMES
+            qty_ok = isinstance(qty_raw, (int, float)) or (isinstance(qty_raw, str) and re.search(r"\d", qty_raw))
+            lbs_ok = isinstance(lbs, (int, float))
+
+            # Acquisition cols: an item is anything with a name and qty-or-lbs.
+            # Distribution cols: require ALL three (name + qty + lbs) — that's what
+            # YMCA-style "for distribution but really an inventory list" looks like.
+            # Free-text in distribution cols (e.g. "VA sold 989", ".77/lb") goes to raw_text.
+            if is_distribution:
+                is_item = name_ok and qty_ok and lbs_ok
+            else:
+                is_item = name_ok and (qty_ok or lbs_ok)
+
+            if is_item:
+                qty, unit = _parse_qty(qty_raw)
+                items.append({
+                    "item": item_name.strip().lower(),
+                    "quantity": qty,
+                    "unit": unit,
+                    "weight_lbs": float(lbs) if isinstance(lbs, (int, float)) else None,
+                    "row": r_idx + 1,
+                })
+            else:
+                txt_parts = [str(c).strip() for c in cells if c is not None and str(c).strip()]
+                if txt_parts:
+                    raw_text.append(" ".join(txt_parts))
+
+        # Decide section type
+        if not is_distribution:
+            stype = "acquisition"
+        elif items:
+            stype = "ambiguous"  # like YMCA — distribution header but full item rows
+        else:
+            stype = "distribution"
+
+        # For pure distribution sections, scrape $ amounts from raw_text
+        sales = []
+        if stype == "distribution":
+            for txt in raw_text:
+                amt = _extract_money(txt)
+                if amt is not None:
+                    sales.append({"raw": txt, "amount_usd": amt})
+
+        out_sections.append({
+            "label": sec["label"],
+            "type": stype,
+            "items": items,
+            "sales": sales,
+            "raw_text": raw_text,
+        })
+
+    # Suggest registry mappings for each acquisition/ambiguous item
+    registry = {r["canonical"]: r for r in get_registry()}
+    alias_index = {}
+    for r in registry.values():
+        for a in r["aliases"]:
+            alias_index[a.lower()] = r["canonical"]
+        alias_index[r["canonical"].lower()] = r["canonical"]
+    for sec in out_sections:
+        for it in sec["items"]:
+            it["suggested_canonical"] = alias_index.get(it["item"]) or it["item"]
+            it["in_registry"] = it["suggested_canonical"] in registry
+
+    return {"date": date_iso, "sections": out_sections}
+
+
+@app.post("/api/import/preview", dependencies=[Depends(require_admin)])
+async def api_import_preview(file: UploadFile = File(...)):
+    content = await file.read()
+    try:
+        preview = parse_haymarket_xlsx(content)
+    except Exception as exc:
+        raise HTTPException(400, f"could not parse xlsx: {exc}")
+    preview["filename"] = file.filename
+    return preview
+
+
+@app.post("/api/import/commit", dependencies=[Depends(require_admin)])
+def api_import_commit(payload: dict):
+    """
+    Body shape (echoed from the preview, with user edits):
+    {
+      "date": "2026-05-16",
+      "filename": "...",
+      "sections": [
+        {"label": "Haymarket", "type": "acquisition", "items": [{item, quantity, unit, weight_lbs, suggested_canonical, skip?}], "sales": [], "raw_text": []},
+        {"label": "Archdale", "type": "distribution", "items": [], "sales": [{raw, amount_usd, site_override?}], ...},
+        ...
+      ]
+    }
+    """
+    date = payload.get("date")
+    if not date:
+        raise HTTPException(400, "date required")
+    received_at = f"{date}T00:00:00"
+
+    created_batches = 0
+    created_sales = 0
+    new_sites = []
+    new_items = []
+
+    with get_db() as conn:
+        for sec in payload.get("sections", []):
+            section_site_id = resolve_site(sec.get("label"))
+            if sec["type"] in ("acquisition", "ambiguous"):
+                # For ambiguous (like YMCA), the UI sets per-item skip flags if user wants to skip
+                for it in sec.get("items", []):
+                    if it.get("skip"):
+                        continue
+                    canonical = (it.get("suggested_canonical") or it.get("item") or "").lower().strip()
+                    if not canonical:
+                        continue
+                    # Auto-register if new
+                    reg = conn.execute(
+                        "SELECT canonical FROM item_registry WHERE canonical=?", (canonical,)
+                    ).fetchone()
+                    if not reg:
+                        unit = (it.get("unit") or "units").lower()
+                        wpu = None
+                        qty = it.get("quantity") or 0
+                        lbs = it.get("weight_lbs")
+                        if qty and lbs:
+                            wpu = round(lbs / qty, 2)
+                        conn.execute(
+                            "INSERT OR IGNORE INTO item_registry (canonical, unit, aliases, weight_per_unit) VALUES (?, ?, ?, ?)",
+                            (canonical, unit, json.dumps([it.get("item", canonical)]), wpu),
+                        )
+                        new_items.append(canonical)
+                    # Write the batch
+                    conn.execute(
+                        """INSERT INTO inventory_batches
+                             (item, site_id, quantity, unit, weight_lbs, quality_score, received_at, note)
+                           VALUES (?, ?, ?, ?, ?, NULL, ?, ?)""",
+                        (
+                            canonical,
+                            section_site_id,
+                            int(it.get("quantity") or 0),
+                            (it.get("unit") or "units"),
+                            float(it["weight_lbs"]) if it.get("weight_lbs") is not None else None,
+                            received_at,
+                            f"imported from {payload.get('filename', 'xlsx')} ({sec['label']})",
+                        ),
+                    )
+                    conn.execute(
+                        """INSERT INTO inventory (item, quantity, unit, updated_at)
+                           VALUES (?, MAX(0, ?), ?, ?)
+                           ON CONFLICT(item) DO UPDATE SET
+                               quantity   = MAX(0, inventory.quantity + ?),
+                               unit       = excluded.unit,
+                               updated_at = excluded.updated_at""",
+                        (canonical, int(it.get("quantity") or 0), (it.get("unit") or "units"),
+                         received_at, int(it.get("quantity") or 0)),
+                    )
+                    created_batches += 1
+            elif sec["type"] == "distribution":
+                # Auto-register distribution sites if new
+                if not section_site_id and sec.get("label"):
+                    site_name = sec["label"].lower().strip()
+                    conn.execute(
+                        "INSERT OR IGNORE INTO sites (canonical, aliases) VALUES (?, ?)",
+                        (site_name, json.dumps([])),
+                    )
+                    section_site_id = resolve_site(site_name)
+                    new_sites.append(site_name)
+                for sale in sec.get("sales", []):
+                    if sale.get("skip"):
+                        continue
+                    amt = sale.get("amount_usd")
+                    if not amt:
+                        continue
+                    conn.execute(
+                        "INSERT INTO sales_log (recorded_at, amount_usd, note, site_id) VALUES (?, ?, ?, ?)",
+                        (received_at, float(amt),
+                         f"imported from {payload.get('filename', 'xlsx')}: {sale.get('raw', '')}",
+                         section_site_id),
+                    )
+                    created_sales += 1
+
+    return {
+        "ok": True,
+        "created_batches": created_batches,
+        "created_sales": created_sales,
+        "new_items": new_items,
+        "new_sites": new_sites,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Row-level list endpoints (for the dashboard tabs)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/sales/list")
+def api_sales_list(limit: int = 50):
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT l.id, l.recorded_at, l.amount_usd,
+                   COALESCE(s.canonical, 'unassigned') AS site,
+                   l.note, l.sms_event_id
+            FROM sales_log l
+            LEFT JOIN sites s ON s.id = l.site_id
+            ORDER BY l.recorded_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/attendance/list")
+def api_attendance_list(limit: int = 50):
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT a.id, a.recorded_at,
+                   COALESCE(s.canonical, 'unassigned') AS site,
+                   a.people_count, a.note, a.sms_event_id
+            FROM attendance_log a
+            LEFT JOIN sites s ON s.id = a.site_id
+            ORDER BY a.recorded_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/adjustments")
+def api_adjustments_list(limit: int = 50):
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT a.id, a.recorded_at, a.item, a.kind, a.delta_quantity,
+                   a.delta_weight_lbs, a.amount_usd, a.recipient, a.note,
+                   COALESCE(s.canonical, 'unassigned') AS site
+            FROM inventory_adjustments a
+            LEFT JOIN sites s ON s.id = a.site_id
+            ORDER BY a.recorded_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/batches")
+def api_batches_list(limit: int = 50):
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT b.id, b.item, COALESCE(s.canonical, 'unassigned') AS site,
+                   b.quantity, b.unit, b.weight_lbs, b.quality_score,
+                   b.received_at, b.note
+            FROM inventory_batches b
+            LEFT JOIN sites s ON s.id = b.site_id
+            ORDER BY b.received_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# CSV downloads
+# ---------------------------------------------------------------------------
+
+def _csv_response(rows: list[dict], filename: str) -> Response:
+    if not rows:
+        text = ""
+    else:
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+        text = buf.getvalue()
+    return Response(
+        content=text,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/inventory.csv")
+def api_inventory_csv():
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT i.item, i.quantity, i.unit, i.updated_at,
+                   r.weight_per_unit,
+                   r.degrade_per_day,
+                   COALESCE((SELECT SUM(b.weight_lbs) FROM inventory_batches b WHERE b.item=i.item), 0) AS total_weight_lbs
+            FROM inventory i
+            LEFT JOIN item_registry r ON r.canonical = i.item
+            ORDER BY i.item
+            """
+        ).fetchall()
+    return _csv_response([dict(r) for r in rows], "inventory.csv")
+
+
+@app.get("/api/batches.csv")
+def api_batches_csv(item: Optional[str] = None):
+    sql = """
+        SELECT b.id, b.item, COALESCE(s.canonical, 'unassigned') AS site,
+               b.quantity, b.unit, b.weight_lbs, b.quality_score,
+               b.received_at, b.note
+        FROM inventory_batches b
+        LEFT JOIN sites s ON s.id = b.site_id
+    """
+    params = []
+    if item:
+        sql += " WHERE b.item = ?"
+        params.append(item.lower().strip())
+    sql += " ORDER BY b.received_at DESC"
+    with get_db() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    fname = f"batches-{item}.csv" if item else "batches.csv"
+    return _csv_response([dict(r) for r in rows], fname)
+
+
+@app.get("/api/sales.csv")
+def api_sales_csv():
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT l.id, l.recorded_at, l.amount_usd,
+                   COALESCE(s.canonical, 'unassigned') AS site,
+                   l.note, l.sms_event_id
+            FROM sales_log l
+            LEFT JOIN sites s ON s.id = l.site_id
+            ORDER BY l.recorded_at DESC
+            """
+        ).fetchall()
+    return _csv_response([dict(r) for r in rows], "sales.csv")
+
+
+@app.get("/api/attendance.csv")
+def api_attendance_csv():
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT a.id, a.recorded_at, COALESCE(s.canonical, 'unassigned') AS site,
+                   a.people_count, a.note, a.sms_event_id
+            FROM attendance_log a
+            LEFT JOIN sites s ON s.id = a.site_id
+            ORDER BY a.recorded_at DESC
+            """
+        ).fetchall()
+    return _csv_response([dict(r) for r in rows], "attendance.csv")
+
+
+@app.get("/api/adjustments.csv")
+def api_adjustments_csv(item: Optional[str] = None):
+    sql = """
+        SELECT id, recorded_at, item, kind, delta_quantity, delta_weight_lbs,
+               amount_usd, recipient, note
+        FROM inventory_adjustments
+    """
+    params = []
+    if item:
+        sql += " WHERE item = ?"
+        params.append(item.lower().strip())
+    sql += " ORDER BY recorded_at DESC"
+    with get_db() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    fname = f"adjustments-{item}.csv" if item else "adjustments.csv"
+    return _csv_response([dict(r) for r in rows], fname)
 
 
 # ---------------------------------------------------------------------------
@@ -926,6 +1745,32 @@ def admin_page(request: Request):
     if not is_logged_in(request):
         return RedirectResponse(url="/login?next=/admin", status_code=303)
     return HTMLResponse(_render("templates/admin.html"))
+
+
+@app.get("/simulator", response_class=HTMLResponse)
+def simulator_page(request: Request):
+    if not is_logged_in(request):
+        return RedirectResponse(url="/login?next=/simulator", status_code=303)
+    return HTMLResponse(_render("templates/simulator.html"))
+
+
+@app.get("/reconcile", response_class=HTMLResponse)
+def reconcile_page(request: Request):
+    if not is_logged_in(request):
+        return RedirectResponse(url="/login?next=/reconcile", status_code=303)
+    return HTMLResponse(_render("templates/reconcile.html"))
+
+
+@app.get("/history", response_class=HTMLResponse)
+def history_page():
+    return HTMLResponse(_render("templates/history.html"))
+
+
+@app.get("/import", response_class=HTMLResponse)
+def import_page(request: Request):
+    if not is_logged_in(request):
+        return RedirectResponse(url="/login?next=/import", status_code=303)
+    return HTMLResponse(_render("templates/import.html"))
 
 
 @app.get("/login", response_class=HTMLResponse)

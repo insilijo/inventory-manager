@@ -4,3 +4,5 @@ anthropic==0.40.0
 twilio==9.3.5
 python-multipart==0.0.12
 itsdangerous>=2.0
+python-dotenv>=1.0
+openpyxl>=3.1

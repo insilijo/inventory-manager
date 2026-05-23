@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Import · FSFN Inventory</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:#f8f7f4; --surface:#fff; --border:rgba(0,0,0,0.1);
+      --text:#1a1a18; --muted:#6b6b67; --hint:#9a9a96;
+      --green:#1D9E75; --amber:#BA7517; --red:#E24B4A; --blue:#185FA5;
+      --green-bg:#EAF3DE; --amber-bg:#FAEEDA; --red-bg:#FCEBEB; --blue-bg:#E6F1FB;
+      --radius:10px;
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+           background: var(--bg); color: var(--text); font-size: 15px; line-height: 1.5; }
+
+    header { background: var(--surface); border-bottom: 0.5px solid var(--border);
+             padding: 0 1.5rem; height: 52px; display: flex; align-items: center;
+             justify-content: space-between; position: sticky; top: 0; z-index: 10; }
+    header h1 { font-size: 15px; font-weight: 500; }
+    header nav a { font-size: 12px; color: var(--muted); margin-left: 1rem; text-decoration: none; }
+    header nav a:hover { color: var(--text); }
+
+    main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
+    h2 { font-size: 18px; font-weight: 500; margin-bottom: 0.5rem; }
+    .sub { color: var(--muted); font-size: 12px; margin-bottom: 1rem; }
+    section + section { margin-top: 2rem; }
+
+    .card { background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--radius); padding: 1.25rem; margin-bottom: 1rem; }
+    .card h3 { font-size: 14px; font-weight: 500; }
+    .card .meta { color: var(--muted); font-size: 12px; margin-bottom: 0.75rem; }
+
+    .badge { display: inline-block; font-size: 10px; padding: 2px 7px; border-radius: 4px;
+             text-transform: uppercase; letter-spacing: 0.04em; margin-left: 0.5rem; vertical-align: middle; }
+    .badge-acq { background: var(--green-bg); color: var(--green); }
+    .badge-dist { background: var(--blue-bg); color: var(--blue); }
+    .badge-amb { background: var(--amber-bg); color: var(--amber); }
+
+    table { width: 100%; border-collapse: separate; border-spacing: 0; }
+    th, td { padding: 7px 9px; text-align: left; font-size: 12px;
+             border-bottom: 0.5px solid var(--border); vertical-align: middle; }
+    th { font-weight: 500; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+    tr:last-child td { border-bottom: none; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+    input, select { font-family: inherit; font-size: 12px; padding: 4px 7px;
+                    border: 0.5px solid var(--border); border-radius: 5px; background: var(--surface); color: var(--text); width: 100%; }
+    input[type="number"] { max-width: 80px; }
+    input[type="file"] { padding: 4px; }
+
+    button { font-family: inherit; font-size: 13px; padding: 7px 14px; border-radius: 6px;
+             cursor: pointer; border: 0.5px solid var(--border); background: var(--surface); color: var(--text); }
+    button.primary { background: var(--text); color: white; border-color: var(--text); }
+    button.primary:hover { background: #000; }
+    button.danger { color: var(--red); border-color: var(--red); }
+    button:hover { background: var(--bg); }
+
+    .pill { display: inline-block; background: var(--green-bg); color: var(--green); padding: 1px 6px; border-radius: 4px; font-size: 10px; }
+    .pill-new { background: var(--amber-bg); color: var(--amber); }
+
+    .empty { color: var(--hint); font-size: 13px; padding: 0.75rem 0; }
+
+    .toast { position: fixed; bottom: 20px; right: 20px; background: var(--text); color: white;
+             padding: 10px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity 0.2s; z-index: 100; }
+    .toast.show { opacity: 0.95; }
+
+    .upload-row { display: flex; gap: 10px; align-items: center; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>FSFN Inventory · Import</h1>
+    <nav>
+      <a href="/">Dashboard</a>
+      <a href="/history">History</a>
+      <a href="/admin">Admin</a>
+      <a href="/simulator">Simulator</a>
+      <a href="/reconcile">Reconcile</a>
+      <a href="/import">Import</a>
+    </nav>
+  </header>
+
+  <main>
+    <h2>Upload a weekly spreadsheet</h2>
+    <div class="sub">Parses the Haymarket-style layout (acquisition + distribution sites). Preview lets you edit before committing. New items and sites are auto-registered.</div>
+
+    <div class="card">
+      <form id="upload-form" class="upload-row">
+        <input id="file" type="file" accept=".xlsx" required />
+        <button type="submit" class="primary">Parse</button>
+      </form>
+    </div>
+
+    <div id="preview"></div>
+  </main>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    function toast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 2200);
+    }
+
+    let preview = null;
+
+    document.getElementById('upload-form').addEventListener('submit', async e => {
+      e.preventDefault();
+      const fileEl = document.getElementById('file');
+      if (!fileEl.files.length) { toast('Pick a file'); return; }
+      const fd = new FormData();
+      fd.append('file', fileEl.files[0]);
+      const r = await fetch('/api/import/preview', { method: 'POST', body: fd });
+      if (r.status === 401) { location.href = '/login?next=/import'; return; }
+      if (!r.ok) { const j = await r.json(); toast('Error: ' + (j.detail || r.statusText)); return; }
+      preview = await r.json();
+      render();
+    });
+
+    function badgeFor(type) {
+      if (type === 'acquisition') return '<span class="badge badge-acq">acquisition</span>';
+      if (type === 'distribution') return '<span class="badge badge-dist">distribution</span>';
+      return '<span class="badge badge-amb">ambiguous</span>';
+    }
+
+    function render() {
+      const el = document.getElementById('preview');
+      if (!preview) { el.innerHTML = ''; return; }
+
+      const cards = preview.sections.map((sec, si) => {
+        let body = '';
+        if (sec.items && sec.items.length) {
+          body += `
+            <table>
+              <thead>
+                <tr>
+                  <th>Skip</th>
+                  <th>Item (as in sheet)</th>
+                  <th>Canonical (registry)</th>
+                  <th class="num">Qty</th>
+                  <th>Unit</th>
+                  <th class="num">Weight (lbs)</th>
+                </tr>
+              </thead>
+              <tbody>
+              ${sec.items.map((it, ii) => `
+                <tr>
+                  <td><input type="checkbox" style="width:auto;" data-skip data-si="${si}" data-ii="${ii}" ${sec.type === 'ambiguous' ? 'checked' : ''} /></td>
+                  <td>${it.item}</td>
+                  <td>
+                    <input data-field="suggested_canonical" data-si="${si}" data-ii="${ii}" value="${it.suggested_canonical || ''}" />
+                    ${it.in_registry ? '<span class="pill">in registry</span>' : '<span class="pill pill-new">new</span>'}
+                  </td>
+                  <td class="num"><input type="number" data-field="quantity" data-si="${si}" data-ii="${ii}" value="${it.quantity ?? ''}" /></td>
+                  <td><input data-field="unit" data-si="${si}" data-ii="${ii}" value="${it.unit || 'units'}" /></td>
+                  <td class="num"><input type="number" step="0.1" data-field="weight_lbs" data-si="${si}" data-ii="${ii}" value="${it.weight_lbs ?? ''}" /></td>
+                </tr>
+              `).join('')}
+              </tbody>
+            </table>`;
+        }
+        if (sec.sales && sec.sales.length) {
+          body += `
+            <h3 style="margin-top:1rem;">Sales</h3>
+            <table>
+              <thead><tr><th>Skip</th><th>Raw cell text</th><th class="num">Amount (USD)</th></tr></thead>
+              <tbody>
+              ${sec.sales.map((s, sj) => `
+                <tr>
+                  <td><input type="checkbox" style="width:auto;" data-skip-sale data-si="${si}" data-sj="${sj}" /></td>
+                  <td style="font-style:italic; color:var(--muted)">"${s.raw}"</td>
+                  <td class="num"><input type="number" step="0.01" data-field-sale="amount_usd" data-si="${si}" data-sj="${sj}" value="${s.amount_usd ?? ''}" /></td>
+                </tr>
+              `).join('')}
+              </tbody>
+            </table>`;
+        }
+        if (!body) body = '<div class="empty">No rows detected in this section.</div>';
+        if (sec.raw_text && sec.raw_text.length && (!sec.sales || !sec.sales.length)) {
+          body += `<div class="meta" style="margin-top:0.5rem;">Other text in this column (not imported): ${sec.raw_text.map(t => '"'+t+'"').join(', ')}</div>`;
+        }
+        return `
+          <div class="card">
+            <h3>${sec.label} ${badgeFor(sec.type)}</h3>
+            <div class="meta">
+              ${sec.type === 'ambiguous' ? '<strong>Heads up:</strong> this column is labeled "for Distribution" but has item rows. By default rows here are <strong>skipped</strong> — uncheck Skip on rows you want to import as acquisitions.' : ''}
+              ${sec.type === 'distribution' ? 'Sales scraped from free-text cells in this column.' : ''}
+            </div>
+            ${body}
+          </div>`;
+      }).join('');
+
+      el.innerHTML = `
+        <section>
+          <div class="card" style="display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <h3>${preview.filename || 'uploaded'} · ${preview.date || '(no date detected)'}</h3>
+              <div class="meta">${preview.sections.length} sections detected. Edit values below, then commit.</div>
+            </div>
+            <div>
+              <label class="meta" style="margin-right:8px;">Date:</label>
+              <input id="date-override" type="date" value="${preview.date || ''}" style="width:auto;" />
+              <button class="primary" id="commit-btn">Commit import</button>
+            </div>
+          </div>
+          ${cards}
+        </section>`;
+
+      // Wire input edits back into the preview state
+      document.querySelectorAll('input[data-field]').forEach(input => {
+        input.addEventListener('change', e => {
+          const si = +e.target.dataset.si, ii = +e.target.dataset.ii;
+          const field = e.target.dataset.field;
+          const sec = preview.sections[si];
+          let v = e.target.value;
+          if (e.target.type === 'number') v = v === '' ? null : parseFloat(v);
+          sec.items[ii][field] = v;
+        });
+      });
+      document.querySelectorAll('input[data-field-sale]').forEach(input => {
+        input.addEventListener('change', e => {
+          const si = +e.target.dataset.si, sj = +e.target.dataset.sj;
+          const field = e.target.dataset['fieldSale'];
+          const v = e.target.value === '' ? null : parseFloat(e.target.value);
+          preview.sections[si].sales[sj][field] = v;
+        });
+      });
+      document.querySelectorAll('input[data-skip]').forEach(input => {
+        input.addEventListener('change', e => {
+          const si = +e.target.dataset.si, ii = +e.target.dataset.ii;
+          preview.sections[si].items[ii].skip = e.target.checked;
+        });
+        // Initialize state from checkbox
+        const si = +input.dataset.si, ii = +input.dataset.ii;
+        preview.sections[si].items[ii].skip = input.checked;
+      });
+      document.querySelectorAll('input[data-skip-sale]').forEach(input => {
+        input.addEventListener('change', e => {
+          const si = +e.target.dataset.si, sj = +e.target.dataset.sj;
+          preview.sections[si].sales[sj].skip = e.target.checked;
+        });
+      });
+
+      document.getElementById('commit-btn').addEventListener('click', commit);
+    }
+
+    async function commit() {
+      preview.date = document.getElementById('date-override').value || preview.date;
+      if (!preview.date) { toast('Pick a date for this import'); return; }
+      const r = await fetch('/api/import/commit', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(preview),
+      });
+      if (r.status === 401) { location.href = '/login?next=/import'; return; }
+      const j = await r.json();
+      if (!r.ok) { toast('Error: ' + (j.detail || r.statusText)); return; }
+      toast(`Imported ${j.created_batches} batches, ${j.created_sales} sales` +
+            (j.new_items.length ? `, ${j.new_items.length} new items` : '') +
+            (j.new_sites.length ? `, ${j.new_sites.length} new sites` : ''));
+      // Clear after a delay
+      setTimeout(() => { preview = null; document.getElementById('preview').innerHTML = ''; document.getElementById('file').value = ''; }, 2500);
+    }
+  </script>
+</body>
+</html>

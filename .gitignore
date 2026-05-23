@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# FSFN
+inventory.db
+inventory.db-journal
+data/
+deploy/fsfn-inventory.env
+*.cpython-*.pyc

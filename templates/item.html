@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Item · FSFN Inventory</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <script src="/static/charts.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -71,13 +72,38 @@
     .toggle-btn.active { background: var(--surface); color: var(--text); box-shadow: 0 0.5px 1px rgba(0,0,0,0.08); }
     .chart-card { background: var(--surface); border: 0.5px solid var(--border);
                   border-radius: var(--radius); padding: 1rem; }
-    .chart-wrap { position: relative; height: 240px; }
+    .chart-wrap { position: relative; height: 280px; }
+
+    .adj-card { background: var(--surface); border: 0.5px solid var(--border);
+                border-radius: var(--radius); padding: 1rem; }
+    .adj-tabs { display: inline-flex; background: var(--bg); border-radius: 6px; padding: 2px; margin-bottom: 1rem; }
+    .adj-tab  { font-size: 12px; padding: 5px 12px; border: none; background: transparent;
+                color: var(--muted); cursor: pointer; border-radius: 4px; font-family: inherit; }
+    .adj-tab.active { background: var(--surface); color: var(--text); box-shadow: 0 0.5px 1px rgba(0,0,0,0.08); }
+    .adj-form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .adj-form-row.three { grid-template-columns: 1fr 1fr 1fr; }
+    .adj-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin: 6px 0 3px; }
+    .adj-input { width: 100%; font-family: inherit; font-size: 13px; padding: 6px 9px;
+                 border: 0.5px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); }
+    .adj-input:focus { outline: none; border-color: var(--text); }
+    .adj-btn { font-family: inherit; font-size: 13px; padding: 7px 14px; border-radius: 6px; cursor: pointer;
+               background: var(--text); color: white; border: none; margin-top: 0.75rem; }
+    .adj-btn:hover { background: #000; }
+    .adj-hint { color: var(--hint); font-size: 11px; margin-top: 0.5rem; }
+
+    .kind-correction { background: var(--blue-bg); color: var(--blue); }
+    .kind-waste { background: var(--red-bg); color: var(--red); }
+    .kind-sold  { background: var(--green-bg); color: var(--green); }
+
+    .toast { position: fixed; bottom: 20px; right: 20px; background: var(--text); color: white;
+             padding: 10px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity 0.2s; z-index: 100; }
+    .toast.show { opacity: 0.95; }
   </style>
 </head>
 <body>
   <header>
     <h1>FSFN Inventory</h1>
-    <nav><a href="/">Dashboard</a><a href="/admin">Admin</a></nav>
+    <nav><a href="/">Dashboard</a><a href="/history">History</a><a href="/admin">Admin</a><a href="/simulator">Simulator</a><a href="/reconcile">Reconcile</a><a href="/import">Import</a></nav>
   </header>
 
   <main>
@@ -85,9 +111,11 @@
     <div id="content"><p class="empty">Loading…</p></div>
   </main>
 
+  <div class="toast" id="toast"></div>
+
   <script>
     const canonical = decodeURIComponent(location.pathname.replace(/^\/item\//, ''));
-    const PALETTE = ['#1D9E75', '#185FA5', '#BA7517', '#6B3FA0', '#167B82', '#E24B4A', '#8a8a86'];
+    const PALETTE = FSFN.PALETTE;
     let histChart = null;
     const histState = { metric: 'quantity', bucket: 'day', days: 90 };
 
@@ -102,47 +130,21 @@
       return `<span class="quality q${rounded}">${(+q).toFixed(1)}/5</span>`;
     }
 
-    function pivot(rows) {
-      const buckets = [...new Set(rows.map(r => r.bucket))].sort();
-      const sites   = [...new Set(rows.map(r => r.site))];
-      const lookup = {};
-      rows.forEach(r => { lookup[r.bucket + '|' + r.site] = r.total; });
-      return {
-        labels: buckets,
-        datasets: sites.map((s, i) => ({
-          label: s,
-          data: buckets.map(b => lookup[b + '|' + s] || 0),
-          borderColor: PALETTE[i % PALETTE.length],
-          backgroundColor: PALETTE[i % PALETTE.length] + '33',
-          tension: 0.25,
-          fill: false,
-        })),
-      };
-    }
-
     async function loadHistory() {
       const { metric, bucket, days } = histState;
       const params = new URLSearchParams({ metric, bucket, since_days: days });
       const rows = await fetch(`/api/item/${encodeURIComponent(canonical)}/history?${params}`).then(r => r.json());
-      const data = pivot(rows);
+      const data = FSFN.pivotBucketed(rows);
       if (histChart) histChart.destroy();
       const canvas = document.getElementById('hist-chart');
       if (!canvas) return;
       histChart = new Chart(canvas, {
         type: 'line',
         data,
-        options: {
-          responsive: true, maintainAspectRatio: false,
-          interaction: { mode: 'index', intersect: false },
-          plugins: {
-            legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 11 } } },
-            tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y}${metric === 'weight' ? ' lbs' : ''}` } },
-          },
-          scales: {
-            y: { beginAtZero: true, ticks: { callback: v => metric === 'weight' ? v + ' lb' : v } },
-            x: { ticks: { maxRotation: 0, autoSkip: true } },
-          },
-        },
+        options: FSFN.baseChartOptions({
+          plugins: { tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y}${metric === 'weight' ? ' lbs' : ''}` } } },
+          scales: { y: { ticks: { callback: v => metric === 'weight' ? v + ' lb' : v } } },
+        }),
       });
     }
 
@@ -224,6 +226,20 @@
           <tbody>${rows}</tbody>
         </table>` : '<p class="empty">No batch history yet.</p>';
 
+      const adjCard = `
+        <section class="adj-card">
+          <div class="section-header">
+            <div class="section-title">Adjust inventory</div>
+            <div class="adj-tabs" id="adj-tabs">
+              <button class="adj-tab active" data-kind="correction">Correction</button>
+              <button class="adj-tab" data-kind="waste">Waste</button>
+              <button class="adj-tab" data-kind="sold">Sold / given</button>
+            </div>
+          </div>
+          <div id="adj-form-body"></div>
+          <div class="adj-hint" id="adj-hint"></div>
+        </section>`;
+
       const historyCard = `
         <section class="chart-card">
           <div class="section-header">
@@ -258,7 +274,20 @@
         ${stats}
         ${historyCard}
         <section style="margin-top:2rem;">
-          <div class="section-title">Batches received</div>
+          ${adjCard}
+        </section>
+        <section style="margin-top:2rem;">
+          <div class="section-header">
+            <div class="section-title">Adjustment history</div>
+            <a href="/api/adjustments.csv?item=${encodeURIComponent(d.canonical)}" class="toggle-btn" style="text-decoration:none; padding:5px 10px; background:var(--bg);">Download CSV</a>
+          </div>
+          <div id="adj-history"><p class="empty">Loading…</p></div>
+        </section>
+        <section style="margin-top:2rem;">
+          <div class="section-header">
+            <div class="section-title">Batches received</div>
+            <a href="/api/batches.csv?item=${encodeURIComponent(d.canonical)}" class="toggle-btn" style="text-decoration:none; padding:5px 10px; background:var(--bg);">Download CSV</a>
+          </div>
           ${table}
         </section>`;
 
@@ -266,6 +295,133 @@
       wireToggle('hist-bucket', 'bucket', loadHistory);
       wireToggle('hist-range',  'days',   loadHistory);
       loadHistory();
+      wireAdjustTabs();
+      renderAdjForm('correction');
+      loadAdjustmentHistory();
+    }
+
+    // -------- Adjustment form --------
+    const ADJ_HINTS = {
+      correction: 'Use negative numbers to subtract, positive to add back. For "wrong parse" fixes.',
+      waste:      'Quantity will be subtracted from inventory. Spoilage, expired, dropped, etc.',
+      sold:       'Quantity is subtracted; if you enter an amount, a sale is logged too.',
+    };
+
+    function renderAdjForm(kind) {
+      const body = document.getElementById('adj-form-body');
+      const isSold = kind === 'sold';
+      body.innerHTML = `
+        <div class="adj-form-row ${isSold ? 'three' : ''}">
+          <div>
+            <div class="adj-label">${kind === 'correction' ? 'Delta quantity (+/-)' : 'Quantity'}</div>
+            <input class="adj-input" id="adj-qty" type="number" step="1" placeholder="${kind === 'correction' ? '-5 or +5' : '5'}" />
+          </div>
+          <div>
+            <div class="adj-label">Weight delta (lbs, optional)</div>
+            <input class="adj-input" id="adj-weight" type="number" step="0.1" />
+          </div>
+          ${isSold ? `<div>
+            <div class="adj-label">Amount (USD)</div>
+            <input class="adj-input" id="adj-amount" type="number" step="0.01" placeholder="0.00" />
+          </div>` : ''}
+        </div>
+        <div class="adj-form-row">
+          ${isSold ? `<div>
+            <div class="adj-label">Sold/given to</div>
+            <input class="adj-input" id="adj-recipient" placeholder="e.g. Jane's restaurant" />
+          </div>` : '<div></div>'}
+          <div>
+            <div class="adj-label">Note</div>
+            <input class="adj-input" id="adj-note" placeholder="optional" />
+          </div>
+        </div>
+        <div class="adj-form-row">
+          <div>
+            <div class="adj-label">Site</div>
+            <select class="adj-input" id="adj-site"><option value="">(unassigned)</option></select>
+          </div>
+          <div style="align-self:end;">
+            <button class="adj-btn" id="adj-submit">Apply ${kind}</button>
+          </div>
+        </div>
+      `;
+      document.getElementById('adj-hint').textContent = ADJ_HINTS[kind];
+      document.getElementById('adj-submit').dataset.kind = kind;
+      document.getElementById('adj-submit').addEventListener('click', submitAdjustment);
+      loadSitesIntoSelect('adj-site');
+    }
+
+    function wireAdjustTabs() {
+      document.getElementById('adj-tabs').addEventListener('click', e => {
+        const btn = e.target.closest('button[data-kind]');
+        if (!btn) return;
+        [...document.querySelectorAll('.adj-tab')].forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        renderAdjForm(btn.dataset.kind);
+      });
+    }
+
+    async function loadSitesIntoSelect(id) {
+      const sel = document.getElementById(id);
+      const sites = await fetch('/api/sites').then(r => r.json());
+      sel.innerHTML = '<option value="">(unassigned)</option>' +
+        sites.map(s => `<option value="${s.canonical}">${s.canonical}</option>`).join('');
+    }
+
+    function toast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 1800);
+    }
+
+    async function submitAdjustment(e) {
+      const kind = e.currentTarget.dataset.kind;
+      const payload = {
+        kind,
+        delta_quantity:    document.getElementById('adj-qty').value || 0,
+        delta_weight_lbs:  document.getElementById('adj-weight').value || null,
+        note:              document.getElementById('adj-note').value || null,
+        site:              document.getElementById('adj-site').value || null,
+      };
+      if (kind === 'sold') {
+        payload.amount_usd = document.getElementById('adj-amount').value || null;
+        payload.recipient  = document.getElementById('adj-recipient').value || null;
+      }
+      const r = await fetch(`/api/item/${encodeURIComponent(canonical)}/adjust`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      });
+      if (r.status === 401) { location.href = '/login?next=' + encodeURIComponent(location.pathname); return; }
+      const j = await r.json();
+      if (r.ok) {
+        toast(`${kind} applied (delta ${j.delta_quantity})`);
+        await load();  // refresh stats + tables
+      } else {
+        toast('Error: ' + (j.detail || r.statusText));
+      }
+    }
+
+    async function loadAdjustmentHistory() {
+      const rows = await fetch(`/api/item/${encodeURIComponent(canonical)}/adjustments`).then(r => r.json());
+      const el = document.getElementById('adj-history');
+      if (!el) return;
+      if (!rows.length) { el.innerHTML = '<p class="empty">No adjustments yet.</p>'; return; }
+      const trs = rows.map(a => `
+        <tr>
+          <td>${fmtTime(a.recorded_at)}</td>
+          <td><span class="quality kind-${a.kind}">${a.kind}</span></td>
+          <td class="num">${a.delta_quantity > 0 ? '+' : ''}${a.delta_quantity}</td>
+          <td class="num">${a.delta_weight_lbs != null ? (a.delta_weight_lbs > 0 ? '+' : '') + a.delta_weight_lbs.toFixed(1) + ' lbs' : '<span class="q-none">—</span>'}</td>
+          <td class="num">${a.amount_usd != null ? '$' + a.amount_usd.toFixed(2) : '<span class="q-none">—</span>'}</td>
+          <td>${a.recipient || '<span class="q-none">—</span>'}</td>
+          <td>${a.site}</td>
+          <td style="color:var(--muted)">${a.note || ''}</td>
+        </tr>`).join('');
+      el.innerHTML = `
+        <table>
+          <thead><tr><th>When</th><th>Kind</th><th class="num">Δ qty</th><th class="num">Δ weight</th><th class="num">Amount</th><th>To</th><th>Site</th><th>Note</th></tr></thead>
+          <tbody>${trs}</tbody>
+        </table>`;
     }
 
     load();
