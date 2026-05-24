@@ -1,0 +1,135 @@
+/* Shared mobile-friendly overrides for FSFN Inventory.
+   Loaded after each page's inline <style> so these rules win equal-specificity ties.
+   !important is used liberally because page-specific styles often duplicate selectors;
+   keeping these rules scoped to @media (max-width: 720px) confines the side effects. */
+
+/* Always-on tweaks */
+body {
+  padding-top:    env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+@media (hover: none) {
+  /* Don't keep hover styles "stuck" on touch devices after tap */
+  a:hover, button:hover { background: transparent !important; }
+}
+
+/* ---- Phone (≤ 720px) ---- */
+@media (max-width: 720px) {
+  header {
+    padding: 0 12px !important;
+    height: auto !important;
+    min-height: 48px !important;
+    gap: 8px !important;
+  }
+  header h1 { font-size: 13px !important; }
+  header nav {
+    display: flex !important;
+    align-items: center !important;
+    gap: 12px !important;
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch;
+    flex: 1 1 auto;
+    justify-content: flex-end;
+    scrollbar-width: none;
+    margin-left: 0 !important;
+    padding: 6px 0 !important;
+  }
+  header nav::-webkit-scrollbar { display: none; }
+  header nav a {
+    font-size: 12px !important;
+    white-space: nowrap;
+    margin-left: 0 !important;
+    padding: 4px 2px;
+    text-decoration: none;
+  }
+  /* "Sign out" button compact */
+  header nav form button { font-size: 11px !important; padding: 4px 8px !important; }
+
+  main { padding: 12px !important; max-width: 100% !important; }
+  h2 { font-size: 16px !important; }
+
+  /* Cards trim padding to give content room */
+  .card,
+  .chart-card,
+  .feed-card,
+  .site-card,
+  .inv-card,
+  .stat,
+  details.feed-card {
+    border-radius: 10px !important;
+  }
+  .card, .chart-card { padding: 12px !important; }
+  /* Allow horizontal-scroll for wide tables sitting inside cards */
+  .card, .chart-card { overflow-x: auto; }
+
+  /* Inputs: 16px so iOS Safari doesn't auto-zoom on focus */
+  input:not([type="checkbox"]):not([type="radio"]),
+  textarea, select {
+    font-size: 16px !important;
+  }
+  /* But toggle buttons stay tight */
+  .toggle-btn, button.toggle-btn {
+    font-size: 11px !important;
+    padding: 5px 10px !important;
+  }
+  /* And view tabs / form buttons keep their look */
+  .view-tab { font-size: 13px !important; padding: 8px 14px !important; }
+
+  /* Stat row 2-up on phone */
+  .stat-row { grid-template-columns: repeat(2, 1fr) !important; gap: 8px !important; }
+  .stat { padding: 10px 12px !important; }
+  .stat-value { font-size: 18px !important; }
+
+  /* Section headers stack so controls don't squish */
+  .section-header {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 8px !important;
+  }
+  .controls { flex-wrap: wrap !important; gap: 6px !important; }
+
+  /* Chart heights — give phones a bit less to scroll past */
+  .chart-wrap { height: 240px !important; }
+
+  /* Admin add-rows: stack form fields */
+  .add-row, .add-row.sites { grid-template-columns: 1fr !important; }
+
+  /* Tables get smaller text, more padding-efficient cells */
+  table { font-size: 12px; }
+  th, td { padding: 7px 8px !important; }
+
+  /* Two-col layouts collapse */
+  .two-col { grid-template-columns: 1fr !important; }
+
+  /* Inventory grid: a bit narrower minimum */
+  .inv-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)) !important; gap: 8px !important; }
+
+  /* Reconcile site cards: 2 per row */
+  .site-grid { grid-template-columns: repeat(2, 1fr) !important; }
+
+  /* Login card centered */
+  .card[style*="max-width: 360px"] { padding: 1.25rem !important; }
+
+  /* Toast positioned bottom-center, not bottom-right (easier to see) */
+  .toast {
+    left: 50% !important; right: auto !important;
+    transform: translateX(-50%);
+    bottom: calc(20px + env(safe-area-inset-bottom)) !important;
+    border-radius: 999px !important;
+  }
+
+  /* Buttons in dense forms easier to tap */
+  button { min-height: 32px; }
+  .send-row button { min-height: 44px; }
+}
+
+/* Phones in landscape / tablets in portrait */
+@media (max-width: 480px) {
+  header nav a:not(.current) {
+    /* Trim long nav on the tiniest screens — current page stays visible */
+  }
+  .stat-value { font-size: 16px !important; }
+  .inv-grid { grid-template-columns: repeat(2, 1fr) !important; }
+  .site-grid { grid-template-columns: 1fr !important; }
+  .chart-wrap { height: 220px !important; }
+}
