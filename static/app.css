@@ -7,7 +7,9 @@
 body {
   padding-top:    env(safe-area-inset-top);
   padding-bottom: env(safe-area-inset-bottom);
+  overflow-x: hidden;            /* never allow the page to scroll horizontally */
 }
+html { overflow-x: hidden; }
 @media (hover: none) {
   /* Don't keep hover styles "stuck" on touch devices after tap */
   a:hover, button:hover { background: transparent !important; }
@@ -20,30 +22,54 @@ body {
     height: auto !important;
     min-height: 48px !important;
     gap: 8px !important;
+    overflow: hidden !important;        /* prevent kids from pushing viewport wider */
+    flex-wrap: nowrap !important;
+    align-items: center !important;
   }
-  header h1 { font-size: 13px !important; }
+  header h1 {
+    font-size: 13px !important;
+    flex: 0 0 auto !important;          /* h1 keeps its natural width */
+    white-space: nowrap;
+  }
+
+  /* The dashboard wraps <nav> + #last-updated in a plain <div>.
+     Make that wrapper shrinkable too. */
+  header > div {
+    min-width: 0 !important;
+    flex: 1 1 auto !important;
+    overflow: hidden !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+  }
+  /* Drop the "Updated …" timestamp on phones to free up nav space */
+  #last-updated { display: none !important; }
+
   header nav {
     display: flex !important;
     align-items: center !important;
     gap: 12px !important;
+    min-width: 0 !important;            /* THIS is what lets a flex child actually shrink */
+    flex: 1 1 auto !important;
     overflow-x: auto !important;
     -webkit-overflow-scrolling: touch;
-    flex: 1 1 auto;
-    justify-content: flex-end;
     scrollbar-width: none;
     margin-left: 0 !important;
-    padding: 6px 0 !important;
+    padding: 4px 0 !important;
+    justify-content: flex-start;        /* scrolls from the left, more natural */
   }
   header nav::-webkit-scrollbar { display: none; }
   header nav a {
     font-size: 12px !important;
     white-space: nowrap;
     margin-left: 0 !important;
-    padding: 4px 2px;
+    padding: 4px 0;
     text-decoration: none;
+    flex: 0 0 auto;
   }
   /* "Sign out" button compact */
-  header nav form button { font-size: 11px !important; padding: 4px 8px !important; }
+  header nav form { flex: 0 0 auto; }
+  header nav form button { font-size: 11px !important; padding: 4px 8px !important; white-space: nowrap; }
 
   main { padding: 12px !important; max-width: 100% !important; }
   h2 { font-size: 16px !important; }
